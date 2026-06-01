@@ -70,8 +70,15 @@ interface CalendarEvent {
   createdAt: string;
 }
 
+type MateriaJuzgado = 'Mercantil' | 'Civil' | 'Familiar' | 'Letrado' | 'Penal';
 type DespachoRole = 'owner' | 'admin' | 'editor' | 'viewer';
 type NotificationPermissionStatus = 'unknown' | 'granted' | 'denied' | 'unsupported';
+
+interface JuzgadoTorreon {
+  id: string;
+  nombre: string;
+  materia: MateriaJuzgado;
+}
 
 interface Despacho {
   id: string;
@@ -103,6 +110,29 @@ interface ChatMessage {
   created_at: string;
 }
 
+interface MobileExpediente {
+  id: string;
+  numero_expediente: string;
+  partes: string;
+  juzgado: string;
+  materia?: string | null;
+  tipo_juicio?: string | null;
+  estatus: string;
+  despacho_id?: string | null;
+  created_at: string;
+  updated_at?: string | null;
+}
+
+interface MobileMovimiento {
+  id: string;
+  expediente_id: string;
+  fecha: string;
+  tipo: string;
+  descripcion: string;
+  despacho_id?: string | null;
+  created_at: string;
+}
+
 interface ChatAttachment {
   id: string;
   message_id: string;
@@ -128,6 +158,7 @@ const PROFILE_STORAGE_KEY = 'judicial-mobile-profile-settings';
 const CALENDAR_EVENTS_STORAGE_KEY = 'judicial-mobile-calendar-events';
 const NOTIFICATION_CHANNEL_ID = 'audiencias';
 const CHAT_FILES_BUCKET = 'despacho-chat-files';
+const DOCUMENT_FILES_BUCKET = 'despacho-document-files';
 const MAX_CHAT_FILE_SIZE = 25 * 1024 * 1024;
 const JURIS_PREMIUM_UNLOCKED = false;
 
@@ -158,12 +189,66 @@ const statCards: StatCard[] = [
 
 const reportItems: ReportItem[] = [];
 
-const expedienteGroups = [
-  { title: 'Mercantil', detail: 'Juzgados mercantiles, ordinario, ejecutivo y oral.' },
-  { title: 'Civil', detail: 'Juzgados civiles, promociones, acuerdos y archivo.' },
-  { title: 'Familiar', detail: 'Fechas sensibles, partes y documentos digitales.' },
-  { title: 'Letrado', detail: 'Consulta compacta por juzgado y fecha de ingreso.' },
-  { title: 'Penal', detail: 'Control de asuntos, audiencias y documentos.' },
+const materiasJuzgado: MateriaJuzgado[] = ['Mercantil', 'Civil', 'Familiar', 'Letrado', 'Penal'];
+
+const juzgadosTorreon: JuzgadoTorreon[] = [
+  { id: 'mercantil-primero', nombre: 'Juzgado Primero de Primera Instancia en Materia Mercantil', materia: 'Mercantil' },
+  { id: 'mercantil-segundo', nombre: 'Juzgado Segundo de Primera Instancia en Materia Mercantil', materia: 'Mercantil' },
+  { id: 'mercantil-tercero', nombre: 'Juzgado Tercero de Primera Instancia en Materia Mercantil', materia: 'Mercantil' },
+  { id: 'civil-primero', nombre: 'Juzgado Primero de Primera Instancia en Materia Civil', materia: 'Civil' },
+  { id: 'civil-segundo', nombre: 'Juzgado Segundo de Primera Instancia en Materia Civil', materia: 'Civil' },
+  { id: 'civil-tercero', nombre: 'Juzgado Tercero de Primera Instancia en Materia Civil', materia: 'Civil' },
+  { id: 'civil-cuarto', nombre: 'Juzgado Cuarto de Primera Instancia en Materia Civil', materia: 'Civil' },
+  { id: 'civil-quinto', nombre: 'Juzgado Quinto de Primera Instancia en Materia Civil con Especializacion Hipotecaria', materia: 'Civil' },
+  { id: 'civil-sexto', nombre: 'Juzgado Sexto de Primera Instancia en Materia Civil con Especializacion Hipotecaria', materia: 'Civil' },
+  { id: 'familiar-primero', nombre: 'Juzgado Primero de Primera Instancia en Materia Familiar', materia: 'Familiar' },
+  { id: 'familiar-segundo', nombre: 'Juzgado Segundo de Primera Instancia en Materia Familiar', materia: 'Familiar' },
+  { id: 'familiar-tercero', nombre: 'Juzgado Tercero de Primera Instancia en Materia Familiar', materia: 'Familiar' },
+  { id: 'familiar-cuarto', nombre: 'Juzgado Cuarto de Primera Instancia en Materia Familiar', materia: 'Familiar' },
+  { id: 'familiar-quinto', nombre: 'Juzgado Quinto de Primera Instancia en Materia Familiar', materia: 'Familiar' },
+  { id: 'letrado-segundo', nombre: 'Juzgado Segundo Letrado Civil', materia: 'Letrado' },
+  { id: 'letrado-tercero', nombre: 'Juzgado Tercero Letrado Civil', materia: 'Letrado' },
+  { id: 'penal-sistema-acusatorio-oral', nombre: 'Juzgado de Primera Instancia en Materia Penal del Sistema Acusatorio y Oral', materia: 'Penal' },
+];
+
+const tiposJuicioPorMateria: Record<MateriaJuzgado, string[]> = {
+  Mercantil: [
+    'Juicio Ejecutivo Mercantil',
+    'Juicio Ordinario Mercantil',
+    'Juicio Oral Mercantil',
+    'Jurisdiccion Voluntaria Mercantil',
+    'Medios Preparatorios a Juicio Mercantil',
+  ],
+  Civil: [
+    'Juicio Ordinario Civil',
+    'Juicio Ejecutivo Civil',
+    'Juicio Sumario Civil',
+    'Jurisdiccion Voluntaria Civil',
+    'Medios Preparatorios a Juicio Civil',
+  ],
+  Familiar: [
+    'Juicio Oral Familiar',
+    'Divorcio',
+    'Alimentos',
+    'Guarda y Custodia',
+    'Convivencia Familiar',
+    'Sucesorio Familiar',
+  ],
+  Letrado: [
+    'Juicio Civil de Menor Cuantia',
+    'Juicio Mercantil de Menor Cuantia',
+    'Diligencias de Jurisdiccion Voluntaria',
+  ],
+  Penal: ['Causa Penal', 'Control', 'Juicio Oral Penal', 'Ejecucion Penal', 'Medidas de Proteccion'],
+};
+
+const movimientoTipos = [
+  'Audiencia',
+  'Presentacion de Pruebas',
+  'Alegatos',
+  'Resolucion',
+  'Apelacion',
+  'Otros',
 ];
 
 const laboralGroups = [
@@ -272,6 +357,8 @@ const isAllowedChatFile = (fileName: string) => {
   return Boolean(allowedChatMimeByExtension[getFileExtension(fileName)]);
 };
 
+const isAllowedDocumentFile = isAllowedChatFile;
+
 const safeFileName = (fileName: string) => {
   const extension = getFileExtension(fileName);
   const baseName = fileName
@@ -300,6 +387,150 @@ const formatFileSize = (size: number) => {
 
 const getDespachoName = (membership?: DespachoMember | null) => {
   return membership?.despacho?.nombre ?? 'Despacho';
+};
+
+const canEditMembership = (membership?: DespachoMember | null) => {
+  return Boolean(membership && membership.role !== 'viewer');
+};
+
+const isAudiencia = (tipo: string) => tipo.trim().toLowerCase() === 'audiencia';
+
+const toDateInputValue = (date = new Date()) => {
+  const day = String(date.getDate()).padStart(2, '0');
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const year = date.getFullYear();
+  return `${day}/${month}/${year}`;
+};
+
+const parseMexicanDateToDatabase = (value: string) => {
+  const match = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(value.trim());
+  if (!match) return null;
+
+  const day = Number(match[1]);
+  const month = Number(match[2]);
+  const year = Number(match[3]);
+  const date = new Date(year, month - 1, day);
+  const valid =
+    date.getFullYear() === year &&
+    date.getMonth() === month - 1 &&
+    date.getDate() === day;
+
+  if (!valid) return null;
+  return `${match[3]}-${match[2]}-${match[1]}`;
+};
+
+const toMexicanDateFromDatabase = (value: string) => {
+  const [year, month, day] = value.split('-');
+  if (!year || !month || !day) return value;
+  return `${day}/${month}/${year}`;
+};
+
+const getMateriaJuzgados = (materia: MateriaJuzgado) => juzgadosTorreon.filter((juzgado) => juzgado.materia === materia);
+
+const getMateriaFromJuzgado = (juzgadoNombre: string): MateriaJuzgado => {
+  return juzgadosTorreon.find((juzgado) => juzgado.nombre === juzgadoNombre)?.materia ?? 'Mercantil';
+};
+
+const getMateriaForExpediente = (expediente: MobileExpediente): MateriaJuzgado => {
+  return (expediente.materia as MateriaJuzgado | undefined) ?? getMateriaFromJuzgado(expediente.juzgado);
+};
+
+const getShortCourtName = (juzgado: string) => {
+  return juzgado
+    .replace('Juzgado ', '')
+    .replace(' de Primera Instancia en Materia ', ' ')
+    .replace(' de Primera Instancia en Materia', ' ')
+    .replace(' con Especializacion Hipotecaria', ' Hipotecario');
+};
+
+const createEmptyExpedienteForm = (materia: MateriaJuzgado, juzgado: string) => ({
+  numero_expediente: '',
+  partes: '',
+  materia,
+  juzgado,
+  tipo_juicio: tiposJuicioPorMateria[materia][0],
+  estatus: 'Activo',
+});
+
+const pickSupportedDocumentFile = async () => {
+  const result = await DocumentPicker.getDocumentAsync({
+    type: chatDocumentTypes,
+    multiple: false,
+    copyToCacheDirectory: true,
+  });
+
+  if (result.canceled || !result.assets?.[0]) return { file: null, error: '' };
+
+  const asset = result.assets[0];
+  const assetFile = typeof File !== 'undefined' && asset.file instanceof File ? asset.file : undefined;
+  const size = asset.size ?? assetFile?.size ?? 0;
+  const mimeType = getSupportedFileType(asset.name, asset.mimeType);
+
+  if (!isAllowedDocumentFile(asset.name)) {
+    return { file: null, error: 'Solo se permiten imagenes, PDF, Word .doc y Word .docx.' };
+  }
+
+  if (size > MAX_CHAT_FILE_SIZE) {
+    return { file: null, error: 'El archivo debe pesar 25 MB o menos.' };
+  }
+
+  return {
+    file: {
+      uri: asset.uri,
+      name: asset.name,
+      mimeType,
+      size: size || 1,
+      file: assetFile,
+    } satisfies SelectedChatFile,
+    error: '',
+  };
+};
+
+const uploadDocumentAttachment = async ({
+  despachoId,
+  targetType,
+  targetId,
+  file,
+  userId,
+}: {
+  despachoId: string;
+  targetType: 'expediente' | 'movimiento';
+  targetId: string;
+  file: SelectedChatFile;
+  userId: string;
+}) => {
+  const targetFolder = targetType === 'expediente' ? 'expedientes' : 'movimientos';
+  const storagePath = `${despachoId}/${targetFolder}/${targetId}/${Date.now()}-${safeFileName(file.name)}`;
+  const uploadBody = file.file ?? (await fetch(file.uri).then((response) => response.arrayBuffer()));
+  const fileSize = file.file?.size ?? (uploadBody instanceof ArrayBuffer ? uploadBody.byteLength : file.size);
+
+  const { error: uploadError } = await supabase.storage
+    .from(DOCUMENT_FILES_BUCKET)
+    .upload(storagePath, uploadBody, {
+      contentType: file.mimeType,
+      upsert: false,
+    });
+
+  if (uploadError) throw uploadError;
+
+  const { error: insertError } = await supabase.from('document_adjuntos').insert([
+    {
+      despacho_id: despachoId,
+      target_type: targetType,
+      expediente_id: targetType === 'expediente' ? targetId : null,
+      movimiento_id: targetType === 'movimiento' ? targetId : null,
+      storage_path: storagePath,
+      file_name: file.name,
+      file_type: file.mimeType,
+      file_size: fileSize || file.size || 1,
+      uploaded_by: userId,
+    },
+  ]);
+
+  if (insertError) {
+    await supabase.storage.from(DOCUMENT_FILES_BUCKET).remove([storagePath]);
+    throw insertError;
+  }
 };
 
 const normalizeForModeration = (value: string) =>
@@ -803,9 +1034,17 @@ export default function App() {
       <ScrollView style={styles.content} contentContainerStyle={styles.contentInner}>
         {activeSection === 'dashboard' && <DashboardScreen onNavigate={setActiveSection} />}
         {activeSection === 'totalExpedientes' && <TotalExpedientesScreen onNavigate={setActiveSection} />}
-        {activeSection === 'expedientes' && <ExpedientesScreen />}
+        {activeSection === 'expedientes' && (
+          <ExpedientesScreen selectedMembership={selectedMembership} currentUserId={session.user.id} />
+        )}
         {activeSection === 'archivo' && <ArchivoScreen onNavigate={setActiveSection} />}
-        {activeSection === 'movimientos' && <MovimientosScreen onCreateCalendarEvent={createCalendarEvent} />}
+        {activeSection === 'movimientos' && (
+          <MovimientosScreen
+            selectedMembership={selectedMembership}
+            currentUserId={session.user.id}
+            onCreateCalendarEvent={createCalendarEvent}
+          />
+        )}
         {activeSection === 'calendario' && (
           <CalendarioScreen
             events={calendarEvents}
@@ -905,9 +1144,7 @@ function DashboardScreen({ onNavigate }: { onNavigate: (section: Section) => voi
           {reportItems.length === 0 ? (
             <View style={styles.emptyState}>
               <Text style={styles.emptyStateTitle}>Sin reportes recientes</Text>
-              <Text style={styles.emptyStateText}>
-                Cuando se agreguen expedientes, movimientos o clientes, las alertas apareceran aqui.
-              </Text>
+              <Text style={styles.emptyStateText}>Sin actividad nueva por ahora.</Text>
             </View>
           ) : (
             reportItems.map((item) => (
@@ -946,19 +1183,314 @@ function TotalExpedientesScreen({ onNavigate }: { onNavigate: (section: Section)
   );
 }
 
-function ExpedientesScreen() {
+function ExpedientesScreen({
+  selectedMembership,
+  currentUserId,
+}: {
+  selectedMembership: DespachoMember | null;
+  currentUserId: string;
+}) {
+  const despachoId = selectedMembership?.despacho_id ?? '';
+  const canEdit = canEditMembership(selectedMembership);
+  const [expedientes, setExpedientes] = useState<MobileExpediente[]>([]);
+  const [selectedMateria, setSelectedMateria] = useState<MateriaJuzgado | null>(null);
+  const [selectedJuzgado, setSelectedJuzgado] = useState<JuzgadoTorreon | null>(null);
+  const [formData, setFormData] = useState(createEmptyExpedienteForm('Mercantil', juzgadosTorreon[0].nombre));
+  const [selectedFile, setSelectedFile] = useState<SelectedChatFile | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
+
+  const fetchExpedientes = useCallback(async () => {
+    if (!despachoId) {
+      setExpedientes([]);
+      return;
+    }
+
+    setLoading(true);
+    const { data, error } = await supabase
+      .from('expedientes')
+      .select('*')
+      .eq('despacho_id', despachoId)
+      .order('updated_at', { ascending: false });
+
+    if (error) {
+      setErrorMessage(error.message);
+      setLoading(false);
+      return;
+    }
+
+    setExpedientes((data ?? []) as MobileExpediente[]);
+    setLoading(false);
+  }, [despachoId]);
+
+  useEffect(() => {
+    fetchExpedientes();
+  }, [fetchExpedientes]);
+
+  const selectMateria = (materia: MateriaJuzgado) => {
+    setSelectedMateria(materia);
+    setSelectedJuzgado(null);
+    const firstJuzgado = getMateriaJuzgados(materia)[0];
+    if (firstJuzgado) setFormData(createEmptyExpedienteForm(materia, firstJuzgado.nombre));
+    setFeedback('');
+    setErrorMessage('');
+  };
+
+  const selectJuzgado = (juzgado: JuzgadoTorreon) => {
+    setSelectedMateria(juzgado.materia);
+    setSelectedJuzgado(juzgado);
+    setFormData(createEmptyExpedienteForm(juzgado.materia, juzgado.nombre));
+    setSelectedFile(null);
+    setFeedback('');
+    setErrorMessage('');
+  };
+
+  const handlePickFile = async () => {
+    const picked = await pickSupportedDocumentFile();
+    if (picked.error) {
+      setErrorMessage(picked.error);
+      return;
+    }
+    setSelectedFile(picked.file);
+  };
+
+  const handleCreateExpediente = async () => {
+    if (!despachoId) {
+      setErrorMessage('Primero crea o selecciona un despacho.');
+      return;
+    }
+
+    if (!canEdit) {
+      setErrorMessage('Tu acceso es de solo lectura. Pide permiso de edicion al propietario.');
+      return;
+    }
+
+    if (!formData.numero_expediente.trim() || !formData.partes.trim()) {
+      setErrorMessage('Escribe numero de expediente y partes.');
+      return;
+    }
+
+    setSaving(true);
+    setFeedback('');
+    setErrorMessage('');
+
+    const payload = {
+      numero_expediente: formData.numero_expediente.trim(),
+      partes: formData.partes.trim(),
+      juzgado: formData.juzgado,
+      materia: formData.materia,
+      tipo_juicio: formData.tipo_juicio,
+      estatus: formData.estatus,
+      despacho_id: despachoId,
+    };
+
+    const legacyPayload = {
+      numero_expediente: payload.numero_expediente,
+      partes: payload.partes,
+      juzgado: payload.juzgado,
+      estatus: payload.estatus,
+      despacho_id: despachoId,
+    };
+
+    const insertResponse = await supabase.from('expedientes').insert([payload]).select('id').single();
+    const retryLegacy =
+      insertResponse.error?.message.includes('materia') ||
+      insertResponse.error?.message.includes('tipo_juicio');
+    const result = retryLegacy
+      ? await supabase.from('expedientes').insert([legacyPayload]).select('id').single()
+      : insertResponse;
+
+    if (result.error || !result.data?.id) {
+      setErrorMessage(result.error?.message ?? 'No se pudo guardar el expediente.');
+      setSaving(false);
+      return;
+    }
+
+    if (selectedFile) {
+      try {
+        await uploadDocumentAttachment({
+          despachoId,
+          targetType: 'expediente',
+          targetId: result.data.id as string,
+          file: selectedFile,
+          userId: currentUserId,
+        });
+      } catch (uploadError) {
+        setErrorMessage(uploadError instanceof Error ? uploadError.message : 'Expediente guardado, pero no se adjunto el archivo.');
+      }
+    }
+
+    setFeedback(selectedFile ? 'Expediente guardado con archivo adjunto.' : 'Expediente guardado.');
+    setFormData(createEmptyExpedienteForm(formData.materia, formData.juzgado));
+    setSelectedFile(null);
+    setSaving(false);
+    fetchExpedientes();
+  };
+
+  const juzgados = selectedMateria ? getMateriaJuzgados(selectedMateria) : [];
+  const visibleExpedientes = selectedJuzgado
+    ? expedientes.filter((expediente) => expediente.juzgado === selectedJuzgado.nombre)
+    : selectedMateria
+      ? expedientes.filter((expediente) => getMateriaForExpediente(expediente) === selectedMateria)
+      : expedientes;
+
   return (
     <View style={styles.stack}>
-      <ScreenHeader
-        title="Expedientes"
-        subtitle="Primero eliges materia, luego juzgado, y dentro agregas o consultas expedientes."
-      />
-      {expedienteGroups.map((group) => (
-        <CompactRow key={group.title} title={group.title} detail={group.detail} icon="folder-open-outline" />
-      ))}
-      <View style={styles.formPreview}>
-        <Text style={styles.cardTitle}>Nuevo expediente</Text>
-        <Text style={styles.cardText}>Materia, juzgado, partes, numero, estatus y archivos adjuntos.</Text>
+      <ScreenHeader title="Expedientes" subtitle="Materia, juzgado, expediente y documentos digitales." />
+
+      {!selectedMembership && (
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyStateTitle}>Sin despacho seleccionado</Text>
+          <Text style={styles.emptyStateText}>Crea o unete a un despacho para guardar expedientes.</Text>
+        </View>
+      )}
+
+      <View style={styles.optionGrid}>
+        {materiasJuzgado.map((materia) => {
+          const active = selectedMateria === materia;
+          const count = expedientes.filter((expediente) => getMateriaForExpediente(expediente) === materia).length;
+          return (
+            <Pressable key={materia} style={[styles.optionCard, active && styles.optionCardActive]} onPress={() => selectMateria(materia)}>
+              <Ionicons name="folder-open-outline" size={20} color={active ? '#ffffff' : '#1d4ed8'} />
+              <Text style={[styles.optionTitle, active && styles.optionTitleActive]}>{materia}</Text>
+              <Text style={[styles.optionMeta, active && styles.optionMetaActive]}>{count} expediente(s)</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+
+      {selectedMateria && (
+        <View style={styles.recordsStack}>
+          <Text style={styles.sectionMiniTitle}>Juzgados de {selectedMateria}</Text>
+          {juzgados.map((juzgado) => {
+            const active = selectedJuzgado?.id === juzgado.id;
+            const count = expedientes.filter((expediente) => expediente.juzgado === juzgado.nombre).length;
+            return (
+              <Pressable key={juzgado.id} style={[styles.compactRow, active && styles.compactRowActive]} onPress={() => selectJuzgado(juzgado)}>
+                <View style={styles.compactIcon}>
+                  <Ionicons name="business-outline" size={19} color="#1d4ed8" />
+                </View>
+                <View style={styles.compactCopy}>
+                  <Text style={styles.cardTitle}>{getShortCourtName(juzgado.nombre)}</Text>
+                  <Text style={styles.cardText}>{count} expediente(s)</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color="#94a3b8" />
+              </Pressable>
+            );
+          })}
+        </View>
+      )}
+
+      {selectedJuzgado && (
+        <View style={styles.formPreview}>
+          <Text style={styles.cardTitle}>Anadir expediente</Text>
+          <Text style={styles.cardText}>{getShortCourtName(selectedJuzgado.nombre)}</Text>
+
+          <Text style={styles.inputLabel}>Numero de expediente</Text>
+          <TextInput
+            onChangeText={(value) => setFormData({ ...formData, numero_expediente: value })}
+            placeholder="142/2026"
+            placeholderTextColor="#94a3b8"
+            style={styles.input}
+            value={formData.numero_expediente}
+          />
+
+          <Text style={styles.inputLabel}>Partes</Text>
+          <TextInput
+            onChangeText={(value) => setFormData({ ...formData, partes: value })}
+            placeholder="Actor vs Demandado"
+            placeholderTextColor="#94a3b8"
+            style={styles.input}
+            value={formData.partes}
+          />
+
+          <Text style={styles.inputLabel}>Tipo de juicio</Text>
+          <View style={styles.chipWrap}>
+            {tiposJuicioPorMateria[formData.materia].map((tipoJuicio) => {
+              const active = formData.tipo_juicio === tipoJuicio;
+              return (
+                <Pressable
+                  key={tipoJuicio}
+                  style={[styles.choiceChip, active && styles.choiceChipActive]}
+                  onPress={() => setFormData({ ...formData, tipo_juicio: tipoJuicio })}
+                >
+                  <Text style={[styles.choiceChipText, active && styles.choiceChipTextActive]}>{tipoJuicio}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          <Text style={styles.inputLabel}>Estatus</Text>
+          <View style={styles.chipWrap}>
+            {['Activo', 'Archivado'].map((estatus) => {
+              const active = formData.estatus === estatus;
+              return (
+                <Pressable
+                  key={estatus}
+                  style={[styles.choiceChip, active && styles.choiceChipActive]}
+                  onPress={() => setFormData({ ...formData, estatus })}
+                >
+                  <Text style={[styles.choiceChipText, active && styles.choiceChipTextActive]}>{estatus}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          {selectedFile && (
+            <View style={styles.selectedFileRow}>
+              <Ionicons name="attach-outline" size={18} color="#1d4ed8" />
+              <View style={styles.attachmentCopy}>
+                <Text style={styles.attachmentName}>{selectedFile.name}</Text>
+                <Text style={styles.attachmentSize}>{formatFileSize(selectedFile.size)}</Text>
+              </View>
+              <Pressable style={styles.iconButton} onPress={() => setSelectedFile(null)}>
+                <Ionicons name="close-outline" size={18} color="#be123c" />
+              </Pressable>
+            </View>
+          )}
+
+          <View style={styles.actionRow}>
+            <Pressable style={styles.secondaryActionCompact} onPress={handlePickFile}>
+              <Ionicons name="attach-outline" size={17} color="#1d4ed8" />
+              <Text style={styles.secondaryActionCompactText}>Adjuntar</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.primaryAction, styles.actionRowPrimary, saving && styles.sendButtonDisabled]}
+              onPress={handleCreateExpediente}
+              disabled={saving}
+            >
+              <Text style={styles.primaryActionText}>{saving ? 'Guardando...' : 'Guardar expediente'}</Text>
+              <Ionicons name="save-outline" size={18} color="#ffffff" />
+            </Pressable>
+          </View>
+
+          {Boolean(feedback) && <Text style={styles.inlineFeedback}>{feedback}</Text>}
+          {Boolean(errorMessage) && <Text style={styles.inlineError}>{errorMessage}</Text>}
+        </View>
+      )}
+
+      <View style={styles.recordsStack}>
+        <Text style={styles.sectionMiniTitle}>{loading ? 'Cargando expedientes...' : 'Expedientes encontrados'}</Text>
+        {visibleExpedientes.length === 0 ? (
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyStateTitle}>Sin expedientes</Text>
+            <Text style={styles.emptyStateText}>Selecciona un juzgado y guarda el primer expediente.</Text>
+          </View>
+        ) : (
+          visibleExpedientes.map((expediente) => (
+            <View key={expediente.id} style={styles.recordCard}>
+              <Text style={styles.cardTitle}>{expediente.numero_expediente}</Text>
+              <Text style={styles.cardText}>{expediente.partes}</Text>
+              <View style={styles.recordMetaRow}>
+                <Text style={styles.recordPill}>{expediente.estatus}</Text>
+                <Text style={styles.recordPill}>{expediente.tipo_juicio ?? getMateriaForExpediente(expediente)}</Text>
+              </View>
+              <Text style={styles.cardText}>{getShortCourtName(expediente.juzgado)}</Text>
+            </View>
+          ))
+        )}
       </View>
     </View>
   );
@@ -977,67 +1509,303 @@ function ArchivoScreen({ onNavigate }: { onNavigate: (section: Section) => void 
 }
 
 function MovimientosScreen({
+  selectedMembership,
+  currentUserId,
   onCreateCalendarEvent,
 }: {
+  selectedMembership: DespachoMember | null;
+  currentUserId: string;
   onCreateCalendarEvent: (title: string, dateInput: string, timeInput: string) => Promise<{ ok: boolean; message: string }>;
 }) {
-  const [audienceTitle, setAudienceTitle] = useState('Audiencia');
-  const [audienceDate, setAudienceDate] = useState('');
-  const [audienceTime, setAudienceTime] = useState('09:00');
+  const despachoId = selectedMembership?.despacho_id ?? '';
+  const canEdit = canEditMembership(selectedMembership);
+  const [expedientes, setExpedientes] = useState<MobileExpediente[]>([]);
+  const [movimientos, setMovimientos] = useState<MobileMovimiento[]>([]);
+  const [selectedExpedienteId, setSelectedExpedienteId] = useState('');
+  const [tipo, setTipo] = useState('Audiencia');
+  const [descripcion, setDescripcion] = useState('');
+  const [fecha, setFecha] = useState(toDateInputValue());
+  const [hora, setHora] = useState('09:00');
+  const [selectedFile, setSelectedFile] = useState<SelectedChatFile | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
 
-  const handleSaveAudience = async () => {
-    const result = await onCreateCalendarEvent(audienceTitle, audienceDate, audienceTime);
-    setFeedback(result.message);
-    if (result.ok) {
-      setAudienceTitle('Audiencia');
-      setAudienceDate('');
-      setAudienceTime('09:00');
+  const fetchData = useCallback(async () => {
+    if (!despachoId) {
+      setExpedientes([]);
+      setMovimientos([]);
+      return;
     }
+
+    setLoading(true);
+    const [expedientesResponse, movimientosResponse] = await Promise.all([
+      supabase
+        .from('expedientes')
+        .select('*')
+        .eq('despacho_id', despachoId)
+        .order('updated_at', { ascending: false }),
+      supabase
+        .from('movimientos')
+        .select('*')
+        .eq('despacho_id', despachoId)
+        .order('fecha', { ascending: false }),
+    ]);
+
+    if (expedientesResponse.error || movimientosResponse.error) {
+      setErrorMessage(expedientesResponse.error?.message ?? movimientosResponse.error?.message ?? 'No se pudo cargar la informacion.');
+      setLoading(false);
+      return;
+    }
+
+    const nextExpedientes = (expedientesResponse.data ?? []) as MobileExpediente[];
+    setExpedientes(nextExpedientes);
+    setMovimientos((movimientosResponse.data ?? []) as MobileMovimiento[]);
+    setSelectedExpedienteId((current) => current || nextExpedientes[0]?.id || '');
+    setLoading(false);
+  }, [despachoId]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  const handlePickFile = async () => {
+    const picked = await pickSupportedDocumentFile();
+    if (picked.error) {
+      setErrorMessage(picked.error);
+      return;
+    }
+    setSelectedFile(picked.file);
   };
+
+  const handleCreateMovimiento = async () => {
+    if (!despachoId) {
+      setErrorMessage('Primero crea o selecciona un despacho.');
+      return;
+    }
+
+    if (!canEdit) {
+      setErrorMessage('Tu acceso es de solo lectura. Pide permiso de edicion al propietario.');
+      return;
+    }
+
+    if (!selectedExpedienteId || !descripcion.trim()) {
+      setErrorMessage('Selecciona expediente y escribe la descripcion.');
+      return;
+    }
+
+    const databaseDate = parseMexicanDateToDatabase(fecha);
+    if (!databaseDate) {
+      setErrorMessage('Usa fecha con formato 00/00/0000.');
+      return;
+    }
+
+    setSaving(true);
+    setFeedback('');
+    setErrorMessage('');
+
+    const { data, error } = await supabase
+      .from('movimientos')
+      .insert([
+        {
+          expediente_id: selectedExpedienteId,
+          despacho_id: despachoId,
+          fecha: databaseDate,
+          tipo,
+          descripcion: descripcion.trim(),
+        },
+      ])
+      .select('id')
+      .single();
+
+    if (error || !data?.id) {
+      setErrorMessage(error?.message ?? 'No se pudo guardar el movimiento.');
+      setSaving(false);
+      return;
+    }
+
+    let nextMessage = 'Movimiento guardado.';
+
+    if (isAudiencia(tipo)) {
+      const calendarResult = await onCreateCalendarEvent(descripcion.trim() || 'Audiencia', fecha, hora);
+      nextMessage = calendarResult.ok
+        ? 'Movimiento guardado y audiencia agregada al calendario.'
+        : `Movimiento guardado. ${calendarResult.message}`;
+    }
+
+    if (selectedFile) {
+      try {
+        await uploadDocumentAttachment({
+          despachoId,
+          targetType: 'movimiento',
+          targetId: data.id as string,
+          file: selectedFile,
+          userId: currentUserId,
+        });
+        nextMessage = `${nextMessage} Archivo adjunto guardado.`;
+      } catch (uploadError) {
+        setErrorMessage(uploadError instanceof Error ? uploadError.message : 'Movimiento guardado, pero no se adjunto el archivo.');
+      }
+    }
+
+    setFeedback(nextMessage);
+    setDescripcion('');
+    setFecha(toDateInputValue());
+    setHora('09:00');
+    setSelectedFile(null);
+    setSaving(false);
+    fetchData();
+  };
+
+  const selectedExpediente = expedientes.find((expediente) => expediente.id === selectedExpedienteId);
 
   return (
     <View style={styles.stack}>
-      <ScreenHeader title="Movimientos" subtitle="Acuerdos, promociones, audiencias y archivos relacionados." />
+      <ScreenHeader title="Movimientos" subtitle="Acuerdos, promociones, audiencias y archivos." />
+
+      {!selectedMembership && (
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyStateTitle}>Sin despacho seleccionado</Text>
+          <Text style={styles.emptyStateText}>Crea o unete a un despacho para guardar movimientos.</Text>
+        </View>
+      )}
+
       <View style={styles.formPreview}>
         <Text style={styles.inputLabel}>Tipo de movimiento</Text>
-        <View style={styles.selectLike}>
-          <Text style={styles.selectLikeText}>Audiencia</Text>
-          <Ionicons name="chevron-down" size={17} color="#64748b" />
+        <View style={styles.chipWrap}>
+          {movimientoTipos.map((tipoMovimiento) => {
+            const active = tipo === tipoMovimiento;
+            return (
+              <Pressable
+                key={tipoMovimiento}
+                style={[styles.choiceChip, active && styles.choiceChipActive]}
+                onPress={() => setTipo(tipoMovimiento)}
+              >
+                <Text style={[styles.choiceChipText, active && styles.choiceChipTextActive]}>{tipoMovimiento}</Text>
+              </Pressable>
+            );
+          })}
         </View>
+
+        <Text style={styles.inputLabel}>Expediente</Text>
+        {expedientes.length === 0 ? (
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyStateTitle}>Sin expedientes</Text>
+            <Text style={styles.emptyStateText}>Primero agrega un expediente para registrar movimientos.</Text>
+          </View>
+        ) : (
+          <View style={styles.recordsStack}>
+            {expedientes.slice(0, 8).map((expediente) => {
+              const active = selectedExpedienteId === expediente.id;
+              return (
+                <Pressable
+                  key={expediente.id}
+                  style={[styles.compactRow, active && styles.compactRowActive]}
+                  onPress={() => setSelectedExpedienteId(expediente.id)}
+                >
+                  <View style={styles.compactIcon}>
+                    <Ionicons name="document-text-outline" size={19} color="#1d4ed8" />
+                  </View>
+                  <View style={styles.compactCopy}>
+                    <Text style={styles.cardTitle}>{expediente.numero_expediente}</Text>
+                    <Text style={styles.cardText}>{expediente.partes}</Text>
+                  </View>
+                </Pressable>
+              );
+            })}
+          </View>
+        )}
+
         <Text style={styles.inputLabel}>Descripcion</Text>
         <TextInput
-          onChangeText={setAudienceTitle}
-          placeholder="Audiencia inicial"
+          multiline
+          onChangeText={setDescripcion}
+          placeholder="Acuerdo publicado, promocion presentada, audiencia..."
           placeholderTextColor="#94a3b8"
-          style={styles.input}
-          value={audienceTitle}
+          style={[styles.input, styles.textArea]}
+          value={descripcion}
         />
-        <Text style={styles.inputLabel}>Fecha de audiencia</Text>
+
+        <Text style={styles.inputLabel}>{isAudiencia(tipo) ? 'Fecha de audiencia' : 'Fecha'}</Text>
         <TextInput
           keyboardType="numeric"
-          onChangeText={setAudienceDate}
+          onChangeText={setFecha}
           placeholder="00/00/0000"
           placeholderTextColor="#94a3b8"
           style={styles.input}
-          value={audienceDate}
+          value={fecha}
         />
-        <Text style={styles.inputLabel}>Hora</Text>
-        <TextInput
-          keyboardType="numeric"
-          onChangeText={setAudienceTime}
-          placeholder="09:00"
-          placeholderTextColor="#94a3b8"
-          style={styles.input}
-          value={audienceTime}
-        />
-        <Pressable style={styles.primaryAction} onPress={handleSaveAudience}>
-          <Text style={styles.primaryActionText}>Guardar en Calendario</Text>
-          <Ionicons name="notifications-outline" size={18} color="#ffffff" />
-        </Pressable>
+
+        {isAudiencia(tipo) && (
+          <>
+            <Text style={styles.inputLabel}>Hora</Text>
+            <TextInput
+              keyboardType="numeric"
+              onChangeText={setHora}
+              placeholder="09:00"
+              placeholderTextColor="#94a3b8"
+              style={styles.input}
+              value={hora}
+            />
+          </>
+        )}
+
+        {selectedFile && (
+          <View style={styles.selectedFileRow}>
+            <Ionicons name="attach-outline" size={18} color="#1d4ed8" />
+            <View style={styles.attachmentCopy}>
+              <Text style={styles.attachmentName}>{selectedFile.name}</Text>
+              <Text style={styles.attachmentSize}>{formatFileSize(selectedFile.size)}</Text>
+            </View>
+            <Pressable style={styles.iconButton} onPress={() => setSelectedFile(null)}>
+              <Ionicons name="close-outline" size={18} color="#be123c" />
+            </Pressable>
+          </View>
+        )}
+
+        <View style={styles.actionRow}>
+          <Pressable style={styles.secondaryActionCompact} onPress={handlePickFile}>
+            <Ionicons name="attach-outline" size={17} color="#1d4ed8" />
+            <Text style={styles.secondaryActionCompactText}>Adjuntar</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.primaryAction, styles.actionRowPrimary, saving && styles.sendButtonDisabled]}
+            onPress={handleCreateMovimiento}
+            disabled={saving}
+          >
+            <Text style={styles.primaryActionText}>{saving ? 'Guardando...' : 'Guardar movimiento'}</Text>
+            <Ionicons name="save-outline" size={18} color="#ffffff" />
+          </Pressable>
+        </View>
+
         {Boolean(feedback) && <Text style={styles.inlineFeedback}>{feedback}</Text>}
+        {Boolean(errorMessage) && <Text style={styles.inlineError}>{errorMessage}</Text>}
       </View>
-      <CompactList items={['Registrar audiencia por fecha', 'Adjuntar PDF, Word o imagen', 'Enviar aviso al calendario']} />
+
+      <View style={styles.recordsStack}>
+        <Text style={styles.sectionMiniTitle}>{loading ? 'Cargando movimientos...' : 'Movimientos recientes'}</Text>
+        {movimientos.length === 0 ? (
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyStateTitle}>Sin movimientos</Text>
+            <Text style={styles.emptyStateText}>Guarda el primer movimiento del expediente.</Text>
+          </View>
+        ) : (
+          movimientos.slice(0, 12).map((movimiento) => {
+            const expediente = expedientes.find((item) => item.id === movimiento.expediente_id);
+            return (
+              <View key={movimiento.id} style={styles.recordCard}>
+                <Text style={styles.cardTitle}>{movimiento.tipo}</Text>
+                <Text style={styles.cardText}>{movimiento.descripcion}</Text>
+                <View style={styles.recordMetaRow}>
+                  <Text style={styles.recordPill}>{toMexicanDateFromDatabase(movimiento.fecha)}</Text>
+                  <Text style={styles.recordPill}>{expediente?.numero_expediente ?? selectedExpediente?.numero_expediente ?? 'Expediente'}</Text>
+                </View>
+              </View>
+            );
+          })
+        )}
+      </View>
     </View>
   );
 }
@@ -1967,6 +2735,11 @@ const styles = StyleSheet.create({
     color: '#0f172a',
     fontSize: 16,
   },
+  textArea: {
+    minHeight: 96,
+    paddingTop: 12,
+    textAlignVertical: 'top',
+  },
   primaryButton: {
     minHeight: 50,
     alignItems: 'center',
@@ -2371,6 +3144,10 @@ const styles = StyleSheet.create({
     padding: 14,
     backgroundColor: '#ffffff',
   },
+  compactRowActive: {
+    borderColor: '#1d4ed8',
+    backgroundColor: '#eff6ff',
+  },
   compactIcon: {
     width: 40,
     height: 40,
@@ -2410,6 +3187,124 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     padding: 14,
     backgroundColor: '#ffffff',
+  },
+  optionGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  optionCard: {
+    width: '48%',
+    minHeight: 104,
+    justifyContent: 'space-between',
+    borderWidth: 1,
+    borderColor: '#dbeafe',
+    borderRadius: 6,
+    padding: 13,
+    backgroundColor: '#ffffff',
+  },
+  optionCardActive: {
+    borderColor: '#1d4ed8',
+    backgroundColor: '#1d4ed8',
+  },
+  optionTitle: {
+    color: '#0f172a',
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  optionTitleActive: {
+    color: '#ffffff',
+  },
+  optionMeta: {
+    color: '#64748b',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  optionMetaActive: {
+    color: '#dbeafe',
+  },
+  recordsStack: {
+    gap: 10,
+  },
+  sectionMiniTitle: {
+    color: '#0f172a',
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  chipWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 14,
+  },
+  choiceChip: {
+    minHeight: 38,
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    borderRadius: 6,
+    paddingHorizontal: 11,
+    backgroundColor: '#ffffff',
+  },
+  choiceChipActive: {
+    borderColor: '#1d4ed8',
+    backgroundColor: '#1d4ed8',
+  },
+  choiceChipText: {
+    color: '#1e40af',
+    fontSize: 12,
+    fontWeight: '900',
+  },
+  choiceChipTextActive: {
+    color: '#ffffff',
+  },
+  actionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  actionRowPrimary: {
+    flex: 1,
+  },
+  secondaryActionCompact: {
+    minHeight: 50,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    borderRadius: 6,
+    paddingHorizontal: 12,
+    backgroundColor: '#ffffff',
+  },
+  secondaryActionCompactText: {
+    color: '#1d4ed8',
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  recordCard: {
+    borderWidth: 1,
+    borderColor: '#dbeafe',
+    borderRadius: 6,
+    padding: 14,
+    backgroundColor: '#ffffff',
+  },
+  recordMetaRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 10,
+  },
+  recordPill: {
+    overflow: 'hidden',
+    borderRadius: 999,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    backgroundColor: '#eff6ff',
+    color: '#1e40af',
+    fontSize: 11,
+    fontWeight: '900',
   },
   inlineFeedback: {
     marginTop: 10,
