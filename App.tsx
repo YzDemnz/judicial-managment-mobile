@@ -2418,15 +2418,15 @@ function JurisPremiumScreen({ onNavigate }: { onNavigate: (section: Section) => 
       <View style={styles.jurisHero}>
         <JurisFace />
         <View style={styles.jurisHeroCopy}>
-          <Text style={styles.kicker}>Asistente interno</Text>
-          <Text style={styles.screenTitle}>Juris</Text>
-          <Text style={styles.screenSubtitle}>Usa frases sencillas para encontrar funciones de la app.</Text>
+          <Text style={styles.kicker}>Centro interno</Text>
+          <Text style={styles.screenTitle}>Ayuda del despacho</Text>
+          <Text style={styles.screenSubtitle}>Accesos y pasos frecuentes para el trabajo diario.</Text>
         </View>
       </View>
 
       <View style={styles.chatCard}>
         <Text style={styles.botBubble}>
-          Hola, soy Juris. Puedo ayudarte a encontrar modulos, explicar pasos y guiarte dentro del despacho.
+          Selecciona una opcion o escribe la tarea que necesitas ubicar dentro del despacho.
         </Text>
         <Text style={styles.userBubble}>Como registro una audiencia?</Text>
         <Text style={styles.botBubble}>
@@ -2541,7 +2541,7 @@ function ConfiguracionScreen({
       <CompactList items={['Cambiar contrasena', 'Anadir telefono', 'Cambiar correo', 'Enviar reporte']} />
       {JURIS_PREMIUM_UNLOCKED && (
         <Pressable style={styles.primaryAction} onPress={() => onNavigate('juris')}>
-          <Text style={styles.primaryActionText}>Abrir Juris Premium</Text>
+          <Text style={styles.primaryActionText}>Abrir centro premium</Text>
           <Ionicons name="sparkles-outline" size={18} color="#ffffff" />
         </Pressable>
       )}
