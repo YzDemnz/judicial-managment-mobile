@@ -1,0 +1,100 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/android-apk.yml
+      - App.tsx
+      - app.json
+      - index.ts
+      - package-lock.json
+      - package.json
+      - tsconfig.json
+      - assets/**
+      - src/**
+
+permissions:
+  contents: write
+
+jobs:
+  android-apk:
+    name: Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.1
+          cache: npm
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept Android licenses and install SDK 36
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" || sdkmanager "platform-tools" "platforms;android-36" "build-tools;35.0.0"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate Expo project
+        run: npx expo-doctor
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Generate native Android project
+        run: npx expo prebuild --platform android --clean --non-interactive
+        env:
+          EXPO_NO_GIT_STATUS: "1"
+
+      - name: Build release APK
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:assembleRelease --stacktrace
+        working-directory: android
+
+      - name: Prepare APK asset
+        run: |
+          APK_PATH="$(find android/app/build/outputs/apk/release -name '*.apk' | head -n 1)"
+          if [ -z "$APK_PATH" ]; then
+            echo "No APK was produced."
+            exit 1
+          fi
+          if [[ "$APK_PATH" == *unsigned* ]]; then
+            echo "The produced APK is unsigned: $APK_PATH"
+            exit 1
+          fi
+          cp "$APK_PATH" Judicial-Managment-Mobile-Android.apk
+          ls -lh Judicial-Managment-Mobile-Android.apk
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Judicial-Managment-Mobile-Android
+          path: Judicial-Managment-Mobile-Android.apk
+
+      - name: Publish latest APK release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view mobile-android-beta >/dev/null 2>&1; then
+            gh release upload mobile-android-beta Judicial-Managment-Mobile-Android.apk --clobber
+            gh release edit mobile-android-beta --title "Judicial Managment Mobile APK" --notes "APK beta de Android generado automaticamente desde main." --latest
+          else
+            gh release create mobile-android-beta Judicial-Managment-Mobile-Android.apk --title "Judicial Managment Mobile APK" --notes "APK beta de Android generado automaticamente desde main." --latest
+          fi
