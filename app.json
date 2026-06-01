@@ -14,7 +14,8 @@
           "color": "#1d4ed8",
           "defaultChannel": "audiencias"
         }
-      ]
+      ],
+      "expo-font"
     ],
     "ios": {
       "supportsTablet": true,
