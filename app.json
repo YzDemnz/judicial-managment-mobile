@@ -7,6 +7,15 @@
     "icon": "./assets/icon.png",
     "scheme": "judicialmanagmentmobile",
     "userInterfaceStyle": "automatic",
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "color": "#1d4ed8",
+          "defaultChannel": "audiencias"
+        }
+      ]
+    ],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.mrlegal.judicialmanagment.mobile"

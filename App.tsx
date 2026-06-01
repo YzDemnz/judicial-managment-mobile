@@ -2,6 +2,7 @@ import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Notifications from 'expo-notifications';
 import type { Session } from '@supabase/supabase-js';
 import { useEffect, useMemo, useState } from 'react';
 import {
@@ -58,8 +59,22 @@ interface ProfileSettings {
   accentColor: string;
 }
 
+interface CalendarEvent {
+  id: string;
+  title: string;
+  dateInput: string;
+  timeInput: string;
+  eventAt: string;
+  notificationIds: string[];
+  createdAt: string;
+}
+
+type NotificationPermissionStatus = 'unknown' | 'granted' | 'denied' | 'unsupported';
+
 const logo = require('./assets/brand-icon.png');
 const PROFILE_STORAGE_KEY = 'judicial-mobile-profile-settings';
+const CALENDAR_EVENTS_STORAGE_KEY = 'judicial-mobile-calendar-events';
+const NOTIFICATION_CHANNEL_ID = 'audiencias';
 const JURIS_PREMIUM_UNLOCKED = false;
 
 const navigation: Array<{ id: Section; name: string; icon: keyof typeof Ionicons.glyphMap }> = [
@@ -87,11 +102,7 @@ const statCards: StatCard[] = [
   { title: 'Archivo', value: '0', icon: 'archive-outline', tone: 'indigo', target: 'archivo' },
 ];
 
-const reportItems: ReportItem[] = [
-  { type: 'movimiento', label: 'Movimiento agregado', detail: 'Audiencia registrada para seguimiento.' },
-  { type: 'expediente', label: 'Expediente agregado', detail: 'Nuevo expediente visible en el despacho.' },
-  { type: 'cliente', label: 'Cliente agregado', detail: 'Nuevo contacto disponible para el equipo.' },
-];
+const reportItems: ReportItem[] = [];
 
 const expedienteGroups = [
   { title: 'Mercantil', detail: 'Juzgados mercantiles, ordinario, ejecutivo y oral.' },
@@ -116,6 +127,59 @@ const defaultProfileSettings: ProfileSettings = {
   accentColor: profileColors[0],
 };
 
+if (Platform.OS !== 'web') {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldPlaySound: true,
+      shouldSetBadge: false,
+      shouldShowBanner: true,
+      shouldShowList: true,
+    }),
+  });
+}
+
+const parseCalendarDate = (dateText: string, timeText: string) => {
+  const cleanDate = dateText.trim();
+  const cleanTime = timeText.trim() || '09:00';
+  const match = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(cleanDate);
+  const timeMatch = /^(\d{2}):(\d{2})$/.exec(cleanTime);
+
+  if (!match || !timeMatch) return null;
+
+  const day = Number(match[1]);
+  const month = Number(match[2]) - 1;
+  const year = Number(match[3]);
+  const hours = Number(timeMatch[1]);
+  const minutes = Number(timeMatch[2]);
+  const date = new Date(year, month, day, hours, minutes, 0, 0);
+
+  if (
+    date.getFullYear() !== year ||
+    date.getMonth() !== month ||
+    date.getDate() !== day ||
+    date.getHours() !== hours ||
+    date.getMinutes() !== minutes
+  ) {
+    return null;
+  }
+
+  return date;
+};
+
+const formatCalendarDate = (isoDate: string) => {
+  return new Intl.DateTimeFormat('es-MX', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(new Date(isoDate));
+};
+
+const getPermissionLabel = (status: NotificationPermissionStatus) => {
+  if (status === 'granted') return 'Notificaciones activadas';
+  if (status === 'denied') return 'Permiso bloqueado';
+  if (status === 'unsupported') return 'Disponible en app instalada';
+  return 'Permiso pendiente';
+};
+
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [loadingSession, setLoadingSession] = useState(true);
@@ -127,6 +191,8 @@ export default function App() {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [profileSettings, setProfileSettings] = useState<ProfileSettings>(defaultProfileSettings);
+  const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
+  const [notificationStatus, setNotificationStatus] = useState<NotificationPermissionStatus>('unknown');
 
   useEffect(() => {
     let mounted = true;
@@ -153,6 +219,22 @@ export default function App() {
   useEffect(() => {
     let mounted = true;
 
+    AsyncStorage.getItem(CALENDAR_EVENTS_STORAGE_KEY)
+      .then((savedEvents) => {
+        if (!mounted || !savedEvents) return;
+        const parsedEvents = JSON.parse(savedEvents) as CalendarEvent[];
+        setCalendarEvents(parsedEvents.sort((a, b) => new Date(a.eventAt).getTime() - new Date(b.eventAt).getTime()));
+      })
+      .catch(() => undefined);
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+
     AsyncStorage.getItem(PROFILE_STORAGE_KEY)
       .then((savedProfile) => {
         if (!mounted || !savedProfile) return;
@@ -171,7 +253,128 @@ export default function App() {
     AsyncStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(nextSettings)).catch(() => undefined);
   };
 
-  const displayEmail = useMemo(() => session?.user.email ?? 'Cuenta beta', [session?.user.email]);
+  const saveCalendarEvents = (nextEvents: CalendarEvent[]) => {
+    const sortedEvents = [...nextEvents].sort((a, b) => new Date(a.eventAt).getTime() - new Date(b.eventAt).getTime());
+    setCalendarEvents(sortedEvents);
+    AsyncStorage.setItem(CALENDAR_EVENTS_STORAGE_KEY, JSON.stringify(sortedEvents)).catch(() => undefined);
+  };
+
+  const requestNotificationPermission = async () => {
+    if (Platform.OS === 'web') {
+      setNotificationStatus('unsupported');
+      return false;
+    }
+
+    if (Platform.OS === 'android') {
+      await Notifications.setNotificationChannelAsync(NOTIFICATION_CHANNEL_ID, {
+        name: 'Audiencias y calendario',
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 250, 250, 250],
+        lightColor: '#1d4ed8',
+      });
+    }
+
+    const existingPermission = await Notifications.getPermissionsAsync();
+    let finalStatus = existingPermission.status;
+
+    if (finalStatus !== 'granted') {
+      const requestedPermission = await Notifications.requestPermissionsAsync();
+      finalStatus = requestedPermission.status;
+    }
+
+    const granted = finalStatus === 'granted';
+    setNotificationStatus(granted ? 'granted' : 'denied');
+    return granted;
+  };
+
+  const scheduleCalendarNotifications = async (title: string, eventDate: Date) => {
+    if (Platform.OS === 'web') return [] as string[];
+
+    const granted = await requestNotificationPermission();
+    if (!granted) return [] as string[];
+
+    const notificationDates = [
+      {
+        date: new Date(eventDate.getTime() - 24 * 60 * 60 * 1000),
+        body: `Manana tienes: ${title}`,
+      },
+      {
+        date: eventDate,
+        body: `Hoy tienes: ${title}`,
+      },
+    ].filter((item) => item.date.getTime() > Date.now() + 60 * 1000);
+
+    const notificationIds: string[] = [];
+
+    for (const notificationDate of notificationDates) {
+      const id = await Notifications.scheduleNotificationAsync({
+        content: {
+          title: 'Audiencia programada',
+          body: notificationDate.body,
+          data: { type: 'calendar-event', title, eventAt: eventDate.toISOString() },
+        },
+        trigger: {
+          type: Notifications.SchedulableTriggerInputTypes.DATE,
+          date: notificationDate.date,
+          channelId: NOTIFICATION_CHANNEL_ID,
+        },
+      });
+      notificationIds.push(id);
+    }
+
+    return notificationIds;
+  };
+
+  const createCalendarEvent = async (title: string, dateInput: string, timeInput: string) => {
+    const cleanTitle = title.trim() || 'Audiencia';
+    const eventDate = parseCalendarDate(dateInput, timeInput);
+
+    if (!eventDate) {
+      return { ok: false, message: 'Usa fecha 00/00/0000 y hora 00:00.' };
+    }
+
+    if (eventDate.getTime() <= Date.now()) {
+      return { ok: false, message: 'La fecha debe ser futura para poder programar avisos.' };
+    }
+
+    const notificationIds = await scheduleCalendarNotifications(cleanTitle, eventDate);
+    const nextEvent: CalendarEvent = {
+      id: `${Date.now()}`,
+      title: cleanTitle,
+      dateInput: dateInput.trim(),
+      timeInput: timeInput.trim() || '09:00',
+      eventAt: eventDate.toISOString(),
+      notificationIds,
+      createdAt: new Date().toISOString(),
+    };
+
+    saveCalendarEvents([...calendarEvents, nextEvent]);
+
+    if (Platform.OS === 'web') {
+      return { ok: true, message: 'Evento guardado. Las notificaciones se activan en la app instalada.' };
+    }
+
+    if (notificationIds.length === 0) {
+      return { ok: true, message: 'Evento guardado. No se pudieron programar avisos porque falta el permiso.' };
+    }
+
+    return { ok: true, message: 'Evento guardado con avisos un dia antes y el mismo dia.' };
+  };
+
+  const deleteCalendarEvent = async (eventId: string) => {
+    const event = calendarEvents.find((item) => item.id === eventId);
+    if (event && Platform.OS !== 'web') {
+      await Promise.all(
+        event.notificationIds.map((notificationId) =>
+          Notifications.cancelScheduledNotificationAsync(notificationId).catch(() => undefined),
+        ),
+      );
+    }
+
+    saveCalendarEvents(calendarEvents.filter((item) => item.id !== eventId));
+  };
+
+  const displayEmail = useMemo(() => session?.user.email ?? 'Cuenta', [session?.user.email]);
   const displayName = profileSettings.displayName.trim() || displayEmail.split('@')[0] || 'Colaborador';
 
   const handleAuth = async () => {
@@ -191,7 +394,7 @@ export default function App() {
           password,
           options: {
             emailRedirectTo: PORTAL_CONFIRM_URL,
-            data: { signup_source: 'judicial_mobile_beta' },
+            data: { signup_source: 'judicial_mobile' },
           },
         });
 
@@ -360,8 +563,16 @@ export default function App() {
         {activeSection === 'totalExpedientes' && <TotalExpedientesScreen onNavigate={setActiveSection} />}
         {activeSection === 'expedientes' && <ExpedientesScreen />}
         {activeSection === 'archivo' && <ArchivoScreen onNavigate={setActiveSection} />}
-        {activeSection === 'movimientos' && <MovimientosScreen />}
-        {activeSection === 'calendario' && <CalendarioScreen />}
+        {activeSection === 'movimientos' && <MovimientosScreen onCreateCalendarEvent={createCalendarEvent} />}
+        {activeSection === 'calendario' && (
+          <CalendarioScreen
+            events={calendarEvents}
+            notificationStatus={notificationStatus}
+            onCreateCalendarEvent={createCalendarEvent}
+            onDeleteCalendarEvent={deleteCalendarEvent}
+            onRequestPermission={requestNotificationPermission}
+          />
+        )}
         {activeSection === 'clientes' && <ClientesScreen />}
         {activeSection === 'laboral' && <LaboralScreen />}
         {activeSection === 'teamChat' && <TeamChatScreen />}
@@ -438,12 +649,21 @@ function DashboardScreen({ onNavigate }: { onNavigate: (section: Section) => voi
         </View>
 
         <View style={styles.reportList}>
-          {reportItems.map((item) => (
-            <View key={item.label} style={[styles.reportItem, styles[`report_${item.type}`]]}>
-              <Text style={styles.reportLabel}>{item.label}</Text>
-              <Text style={styles.reportDetail}>{item.detail}</Text>
+          {reportItems.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyStateTitle}>Sin reportes recientes</Text>
+              <Text style={styles.emptyStateText}>
+                Cuando se agreguen expedientes, movimientos o clientes, las alertas apareceran aqui.
+              </Text>
             </View>
-          ))}
+          ) : (
+            reportItems.map((item) => (
+              <View key={item.label} style={[styles.reportItem, styles[`report_${item.type}`]]}>
+                <Text style={styles.reportLabel}>{item.label}</Text>
+                <Text style={styles.reportDetail}>{item.detail}</Text>
+              </View>
+            ))
+          )}
         </View>
       </View>
     </View>
@@ -503,7 +723,26 @@ function ArchivoScreen({ onNavigate }: { onNavigate: (section: Section) => void 
   );
 }
 
-function MovimientosScreen() {
+function MovimientosScreen({
+  onCreateCalendarEvent,
+}: {
+  onCreateCalendarEvent: (title: string, dateInput: string, timeInput: string) => Promise<{ ok: boolean; message: string }>;
+}) {
+  const [audienceTitle, setAudienceTitle] = useState('Audiencia');
+  const [audienceDate, setAudienceDate] = useState('');
+  const [audienceTime, setAudienceTime] = useState('09:00');
+  const [feedback, setFeedback] = useState('');
+
+  const handleSaveAudience = async () => {
+    const result = await onCreateCalendarEvent(audienceTitle, audienceDate, audienceTime);
+    setFeedback(result.message);
+    if (result.ok) {
+      setAudienceTitle('Audiencia');
+      setAudienceDate('');
+      setAudienceTime('09:00');
+    }
+  };
+
   return (
     <View style={styles.stack}>
       <ScreenHeader title="Movimientos" subtitle="Acuerdos, promociones, audiencias y archivos relacionados." />
@@ -513,31 +752,152 @@ function MovimientosScreen() {
           <Text style={styles.selectLikeText}>Audiencia</Text>
           <Ionicons name="chevron-down" size={17} color="#64748b" />
         </View>
+        <Text style={styles.inputLabel}>Descripcion</Text>
+        <TextInput
+          onChangeText={setAudienceTitle}
+          placeholder="Audiencia inicial"
+          placeholderTextColor="#94a3b8"
+          style={styles.input}
+          value={audienceTitle}
+        />
         <Text style={styles.inputLabel}>Fecha de audiencia</Text>
-        <View style={styles.selectLike}>
-          <Text style={styles.placeholderText}>00/00/0000</Text>
-          <Ionicons name="calendar-outline" size={17} color="#64748b" />
-        </View>
+        <TextInput
+          keyboardType="numeric"
+          onChangeText={setAudienceDate}
+          placeholder="00/00/0000"
+          placeholderTextColor="#94a3b8"
+          style={styles.input}
+          value={audienceDate}
+        />
+        <Text style={styles.inputLabel}>Hora</Text>
+        <TextInput
+          keyboardType="numeric"
+          onChangeText={setAudienceTime}
+          placeholder="09:00"
+          placeholderTextColor="#94a3b8"
+          style={styles.input}
+          value={audienceTime}
+        />
+        <Pressable style={styles.primaryAction} onPress={handleSaveAudience}>
+          <Text style={styles.primaryActionText}>Guardar en Calendario</Text>
+          <Ionicons name="notifications-outline" size={18} color="#ffffff" />
+        </Pressable>
+        {Boolean(feedback) && <Text style={styles.inlineFeedback}>{feedback}</Text>}
       </View>
-      <CompactList items={['Alerta roja por movimiento nuevo', 'Adjuntar PDF, Word o imagen', 'Enviar fecha al calendario']} />
+      <CompactList items={['Registrar audiencia por fecha', 'Adjuntar PDF, Word o imagen', 'Enviar aviso al calendario']} />
     </View>
   );
 }
 
-function CalendarioScreen() {
+function CalendarioScreen({
+  events,
+  notificationStatus,
+  onCreateCalendarEvent,
+  onDeleteCalendarEvent,
+  onRequestPermission,
+}: {
+  events: CalendarEvent[];
+  notificationStatus: NotificationPermissionStatus;
+  onCreateCalendarEvent: (title: string, dateInput: string, timeInput: string) => Promise<{ ok: boolean; message: string }>;
+  onDeleteCalendarEvent: (eventId: string) => Promise<void>;
+  onRequestPermission: () => Promise<boolean>;
+}) {
+  const [eventTitle, setEventTitle] = useState('Audiencia');
+  const [eventDate, setEventDate] = useState('');
+  const [eventTime, setEventTime] = useState('09:00');
+  const [feedback, setFeedback] = useState('');
+
+  const handleCreateEvent = async () => {
+    const result = await onCreateCalendarEvent(eventTitle, eventDate, eventTime);
+    setFeedback(result.message);
+    if (result.ok) {
+      setEventTitle('Audiencia');
+      setEventDate('');
+      setEventTime('09:00');
+    }
+  };
+
+  const handleRequestPermission = async () => {
+    const granted = await onRequestPermission();
+    setFeedback(granted ? 'Notificaciones activadas correctamente.' : 'No se pudo activar el permiso de notificaciones.');
+  };
+
   return (
     <View style={styles.stack}>
       <ScreenHeader title="Calendario" subtitle="Audiencias y vencimientos detectados desde movimientos." />
-      <View style={styles.calendarBox}>
-        <View style={styles.calendarDate}>
-          <Text style={styles.calendarDay}>Hoy</Text>
-          <Text style={styles.calendarNumber}>31</Text>
+
+      <View style={styles.permissionCard}>
+        <View style={styles.permissionCopy}>
+          <Text style={styles.cardTitle}>{getPermissionLabel(notificationStatus)}</Text>
+          <Text style={styles.cardText}>La app puede avisarte un dia antes y el mismo dia de cada audiencia.</Text>
         </View>
-        <View style={styles.calendarCopy}>
-          <Text style={styles.cardTitle}>Sin eventos cargados</Text>
-          <Text style={styles.cardText}>Las audiencias apareceran aqui al registrar fecha en movimientos.</Text>
-        </View>
+        <Pressable style={styles.smallPrimaryButton} onPress={handleRequestPermission}>
+          <Text style={styles.smallPrimaryButtonText}>Activar</Text>
+        </Pressable>
       </View>
+
+      <View style={styles.formPreview}>
+        <Text style={styles.cardTitle}>Nueva audiencia</Text>
+        <Text style={styles.cardText}>Guarda una fecha futura para programar recordatorios automaticos.</Text>
+
+        <Text style={styles.inputLabel}>Descripcion</Text>
+        <TextInput
+          onChangeText={setEventTitle}
+          placeholder="Audiencia inicial"
+          placeholderTextColor="#94a3b8"
+          style={styles.input}
+          value={eventTitle}
+        />
+        <Text style={styles.inputLabel}>Fecha</Text>
+        <TextInput
+          keyboardType="numeric"
+          onChangeText={setEventDate}
+          placeholder="00/00/0000"
+          placeholderTextColor="#94a3b8"
+          style={styles.input}
+          value={eventDate}
+        />
+        <Text style={styles.inputLabel}>Hora</Text>
+        <TextInput
+          keyboardType="numeric"
+          onChangeText={setEventTime}
+          placeholder="09:00"
+          placeholderTextColor="#94a3b8"
+          style={styles.input}
+          value={eventTime}
+        />
+        <Pressable style={styles.primaryAction} onPress={handleCreateEvent}>
+          <Text style={styles.primaryActionText}>Agregar audiencia</Text>
+          <Ionicons name="calendar-outline" size={18} color="#ffffff" />
+        </Pressable>
+        {Boolean(feedback) && <Text style={styles.inlineFeedback}>{feedback}</Text>}
+      </View>
+
+      {events.length === 0 ? (
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyStateTitle}>Sin audiencias programadas</Text>
+          <Text style={styles.emptyStateText}>Agrega una fecha para verla aqui y recibir recordatorios.</Text>
+        </View>
+      ) : (
+        events.map((event) => (
+          <View key={event.id} style={styles.calendarBox}>
+            <View style={styles.calendarDate}>
+              <Text style={styles.calendarDay}>{event.dateInput.slice(3, 5)}/{event.dateInput.slice(6)}</Text>
+              <Text style={styles.calendarNumber}>{event.dateInput.slice(0, 2)}</Text>
+            </View>
+            <View style={styles.calendarCopy}>
+              <Text style={styles.cardTitle}>{event.title}</Text>
+              <Text style={styles.cardText}>{formatCalendarDate(event.eventAt)}</Text>
+              <Text style={styles.cardText}>
+                {event.notificationIds.length > 0 ? 'Avisos programados' : 'Guardado sin avisos del sistema'}
+              </Text>
+            </View>
+            <Pressable style={styles.iconDangerButton} onPress={() => onDeleteCalendarEvent(event.id)}>
+              <Ionicons name="trash-outline" size={18} color="#be123c" />
+            </Pressable>
+          </View>
+        ))
+      )}
     </View>
   );
 }
@@ -574,7 +934,7 @@ function TeamChatScreen() {
         <TeamChatIcon />
         <View style={styles.teamCopy}>
           <Text style={styles.cardTitle}>Equipo del despacho</Text>
-          <Text style={styles.cardText}>Preparado para colaboradores, archivos PDF, Word, imagenes y reportes internos.</Text>
+          <Text style={styles.cardText}>Mensajes de colaboradores, archivos PDF, Word, imagenes y reportes internos.</Text>
         </View>
       </View>
 
@@ -1239,6 +1599,24 @@ const styles = StyleSheet.create({
     gap: 10,
     padding: 12,
   },
+  emptyState: {
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 6,
+    padding: 14,
+    backgroundColor: '#f8fafc',
+  },
+  emptyStateTitle: {
+    color: '#0f172a',
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  emptyStateText: {
+    marginTop: 5,
+    color: '#64748b',
+    fontSize: 13,
+    lineHeight: 19,
+  },
   reportItem: {
     borderWidth: 1,
     borderRadius: 6,
@@ -1319,6 +1697,13 @@ const styles = StyleSheet.create({
     padding: 14,
     backgroundColor: '#ffffff',
   },
+  inlineFeedback: {
+    marginTop: 10,
+    color: '#1e40af',
+    fontSize: 13,
+    fontWeight: '800',
+    lineHeight: 18,
+  },
   selectLike: {
     minHeight: 48,
     flexDirection: 'row',
@@ -1343,6 +1728,7 @@ const styles = StyleSheet.create({
   },
   calendarBox: {
     flexDirection: 'row',
+    alignItems: 'center',
     gap: 13,
     borderWidth: 1,
     borderColor: '#dbeafe',
@@ -1370,6 +1756,43 @@ const styles = StyleSheet.create({
   calendarCopy: {
     flex: 1,
     justifyContent: 'center',
+  },
+  permissionCard: {
+    minHeight: 88,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    borderRadius: 6,
+    padding: 14,
+    backgroundColor: '#ffffff',
+  },
+  permissionCopy: {
+    flex: 1,
+  },
+  smallPrimaryButton: {
+    minHeight: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 6,
+    paddingHorizontal: 13,
+    backgroundColor: '#1d4ed8',
+  },
+  smallPrimaryButtonText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  iconDangerButton: {
+    width: 38,
+    height: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#fecdd3',
+    borderRadius: 6,
+    backgroundColor: '#fff1f2',
   },
   teamChatHeader: {
     minHeight: 112,

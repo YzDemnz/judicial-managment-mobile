@@ -1,6 +1,6 @@
 # Judicial Managment Mobile
 
-Aplicacion movil beta de Judicial Managment, creada con Expo, React Native y TypeScript.
+Aplicacion movil de Judicial Managment, creada con Expo, React Native y TypeScript.
 
 ## Ubicacion
 
@@ -19,17 +19,20 @@ npm run web
 npm run typecheck
 ```
 
-## Estado inicial
+## Estado
 
 - Login y registro conectados a Supabase Auth.
 - Confirmacion de correo redirigida al portal web publicado.
 - Sesion persistente en celular mediante AsyncStorage.
-- Pantallas beta para Inicio, Despachos, Expedientes, Movimientos, Calendario, Clientes, Laboral, Archivo, Chat, Juris y Cuenta.
-- Branding inicial con el logo actual.
+- Panel, Expedientes, Movimientos, Calendario, Clientes, Laboral, Archivo, Chat de equipo y Configuracion.
+- Personalizacion local del perfil visible.
+- Calendario local con recordatorios de audiencia usando notificaciones del dispositivo.
+- Juris queda reservado para desbloqueo premium.
+- Branding con el logo actual.
 
 ## Siguiente fase
 
 - Conectar cada pantalla a tablas reales por despacho.
 - Subir fotos, PDF y Word desde celular.
-- Notificaciones push para audiencias.
+- Sincronizacion opcional con calendario externo del telefono.
 - Builds instalables con EAS para Android e iOS.
