@@ -2,9 +2,10 @@ import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as DocumentPicker from 'expo-document-picker';
 import * as Notifications from 'expo-notifications';
 import type { Session } from '@supabase/supabase-js';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -69,12 +70,65 @@ interface CalendarEvent {
   createdAt: string;
 }
 
+type DespachoRole = 'owner' | 'admin' | 'editor' | 'viewer';
 type NotificationPermissionStatus = 'unknown' | 'granted' | 'denied' | 'unsupported';
+
+interface Despacho {
+  id: string;
+  nombre: string;
+  owner_user_id: string;
+  deleted_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+interface DespachoMember {
+  id: string;
+  despacho_id: string;
+  user_id: string;
+  email: string;
+  role: DespachoRole;
+  display_name?: string | null;
+  profile_color?: string | null;
+  avatar_url?: string | null;
+  created_at: string;
+  despacho?: Despacho | null;
+}
+
+interface ChatMessage {
+  id: string;
+  despacho_id: string;
+  sender_user_id: string;
+  body: string;
+  created_at: string;
+}
+
+interface ChatAttachment {
+  id: string;
+  message_id: string;
+  despacho_id: string;
+  storage_path: string;
+  file_name: string;
+  file_type: string;
+  file_size: number;
+  uploaded_by: string;
+  created_at: string;
+}
+
+interface SelectedChatFile {
+  uri: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  file?: File;
+}
 
 const logo = require('./assets/brand-icon.png');
 const PROFILE_STORAGE_KEY = 'judicial-mobile-profile-settings';
 const CALENDAR_EVENTS_STORAGE_KEY = 'judicial-mobile-calendar-events';
 const NOTIFICATION_CHANNEL_ID = 'audiencias';
+const CHAT_FILES_BUCKET = 'despacho-chat-files';
+const MAX_CHAT_FILE_SIZE = 25 * 1024 * 1024;
 const JURIS_PREMIUM_UNLOCKED = false;
 
 const navigation: Array<{ id: Section; name: string; icon: keyof typeof Ionicons.glyphMap }> = [
@@ -119,6 +173,33 @@ const laboralGroups = [
 ];
 
 const profileColors = ['#1d4ed8', '#0f766e', '#7c3aed', '#be123c', '#ca8a04'];
+
+const roleLabels: Record<DespachoRole, string> = {
+  owner: 'Propietario',
+  admin: 'Administrador',
+  editor: 'Editor',
+  viewer: 'Solo lectura',
+};
+
+const genericNameLabels: Record<DespachoRole, string> = {
+  owner: 'Propietario',
+  admin: 'Administrador',
+  editor: 'Colaborador',
+  viewer: 'Solo lectura',
+};
+
+const allowedChatMimeByExtension: Record<string, string> = {
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+  gif: 'image/gif',
+  pdf: 'application/pdf',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+};
+
+const chatDocumentTypes = [...new Set([...Object.values(allowedChatMimeByExtension), 'image/*'])];
 
 const defaultProfileSettings: ProfileSettings = {
   displayName: '',
@@ -180,6 +261,109 @@ const getPermissionLabel = (status: NotificationPermissionStatus) => {
   return 'Permiso pendiente';
 };
 
+const getFileExtension = (fileName: string) => fileName.split('.').pop()?.toLowerCase() ?? '';
+
+const getSupportedFileType = (fileName: string, mimeType?: string | null) => {
+  const extension = getFileExtension(fileName);
+  return allowedChatMimeByExtension[extension] ?? mimeType ?? 'application/octet-stream';
+};
+
+const isAllowedChatFile = (fileName: string) => {
+  return Boolean(allowedChatMimeByExtension[getFileExtension(fileName)]);
+};
+
+const safeFileName = (fileName: string) => {
+  const extension = getFileExtension(fileName);
+  const baseName = fileName
+    .replace(/\.[^.]+$/, '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9._-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 80) || 'archivo';
+
+  return extension ? `${baseName}.${extension}` : baseName;
+};
+
+const formatMessageTime = (dateValue: string) => {
+  return new Intl.DateTimeFormat('es-MX', {
+    dateStyle: 'short',
+    timeStyle: 'short',
+  }).format(new Date(dateValue));
+};
+
+const formatFileSize = (size: number) => {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+const getDespachoName = (membership?: DespachoMember | null) => {
+  return membership?.despacho?.nombre ?? 'Despacho';
+};
+
+const normalizeForModeration = (value: string) =>
+  value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+
+const moderationRules: Array<{ category: string; terms: string[] }> = [
+  {
+    category: 'violencia_o_delito',
+    terms: [
+      'voy a matar',
+      'hay que matar',
+      'amenazar a',
+      'extorsionar',
+      'sobornar al juez',
+      'sobornar al secretario',
+      'falsificar documentos',
+      'fabricar pruebas',
+      'desaparecer pruebas',
+    ],
+  },
+  {
+    category: 'odio_o_discriminacion',
+    terms: [
+      'odio racial',
+      'raza inferior',
+      'ataque racista',
+      'lenguaje racista',
+      'discriminar por raza',
+      'discriminar por religion',
+      'discriminar por orientacion',
+    ],
+  },
+  {
+    category: 'amenaza_o_acoso',
+    terms: [
+      'te voy a buscar',
+      'te voy a destruir',
+      'voy a hacerle dano',
+      'chantajear',
+      'publicar sus datos',
+      'filtrar sus datos',
+    ],
+  },
+];
+
+const detectModerationRisk = (value: string) => {
+  const normalizedValue = normalizeForModeration(value);
+
+  for (const rule of moderationRules) {
+    const matchedTerms = rule.terms.filter((term) => normalizedValue.includes(normalizeForModeration(term)));
+    if (matchedTerms.length > 0) {
+      return {
+        category: rule.category,
+        terms: matchedTerms,
+      };
+    }
+  }
+
+  return null;
+};
+
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [loadingSession, setLoadingSession] = useState(true);
@@ -193,6 +377,10 @@ export default function App() {
   const [profileSettings, setProfileSettings] = useState<ProfileSettings>(defaultProfileSettings);
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
   const [notificationStatus, setNotificationStatus] = useState<NotificationPermissionStatus>('unknown');
+  const [memberships, setMemberships] = useState<DespachoMember[]>([]);
+  const [selectedMembership, setSelectedMembership] = useState<DespachoMember | null>(null);
+  const [loadingMemberships, setLoadingMemberships] = useState(false);
+  const [membershipError, setMembershipError] = useState('');
 
   useEffect(() => {
     let mounted = true;
@@ -215,6 +403,45 @@ export default function App() {
       subscription.unsubscribe();
     };
   }, []);
+
+  const fetchMemberships = useCallback(async () => {
+    if (!session?.user.id) {
+      setMemberships([]);
+      setSelectedMembership(null);
+      return;
+    }
+
+    setLoadingMemberships(true);
+    setMembershipError('');
+
+    const { data, error: membershipsFetchError } = await supabase
+      .from('despacho_miembros')
+      .select('*, despacho:despachos(*)')
+      .order('created_at', { ascending: true });
+
+    if (membershipsFetchError) {
+      setMembershipError(membershipsFetchError.message);
+      setMemberships([]);
+      setSelectedMembership(null);
+      setLoadingMemberships(false);
+      return;
+    }
+
+    const activeMemberships = ((data ?? []) as DespachoMember[]).filter((membership) => !membership.despacho?.deleted_at);
+    setMemberships(activeMemberships);
+    setSelectedMembership((current) => {
+      if (current && activeMemberships.some((membership) => membership.id === current.id)) return current;
+      return activeMemberships[0] ?? null;
+    });
+    setLoadingMemberships(false);
+  }, [session?.user.id]);
+
+  useEffect(() => {
+    fetchMemberships().catch(() => {
+      setMembershipError('No se pudieron cargar los despachos.');
+      setLoadingMemberships(false);
+    });
+  }, [fetchMemberships]);
 
   useEffect(() => {
     let mounted = true;
@@ -251,6 +478,19 @@ export default function App() {
   const updateProfileSettings = (nextSettings: ProfileSettings) => {
     setProfileSettings(nextSettings);
     AsyncStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(nextSettings)).catch(() => undefined);
+    if (selectedMembership) {
+      void (async () => {
+        await supabase
+          .from('despacho_miembros')
+          .update({
+            display_name: nextSettings.displayName.trim() || null,
+            profile_color: nextSettings.accentColor,
+            profile_updated_at: new Date().toISOString(),
+          })
+          .eq('id', selectedMembership.id);
+        await fetchMemberships();
+      })().catch(() => undefined);
+    }
   };
 
   const saveCalendarEvents = (nextEvents: CalendarEvent[]) => {
@@ -526,7 +766,9 @@ export default function App() {
             <Image source={logo} style={styles.headerLogo} />
             <View style={styles.headerText}>
               <Text style={styles.headerTitle}>Judicial Managment</Text>
-              <Text style={styles.headerSubtitle}>{displayName}</Text>
+              <Text style={styles.headerSubtitle}>
+                {selectedMembership ? `${displayName} - ${getDespachoName(selectedMembership)}` : displayName}
+              </Text>
             </View>
             <View style={[styles.headerAvatar, { backgroundColor: profileSettings.accentColor }]}>
               <Text style={styles.headerAvatarText}>{profileSettings.profileInitial.slice(0, 1).toUpperCase()}</Text>
@@ -575,12 +817,23 @@ export default function App() {
         )}
         {activeSection === 'clientes' && <ClientesScreen />}
         {activeSection === 'laboral' && <LaboralScreen />}
-        {activeSection === 'teamChat' && <TeamChatScreen />}
+        {activeSection === 'teamChat' && (
+          <TeamChatScreen
+            currentUserId={session.user.id}
+            memberships={memberships}
+            selectedMembership={selectedMembership}
+            loadingMemberships={loadingMemberships}
+            membershipError={membershipError}
+            onRefreshMemberships={fetchMemberships}
+            onSelectMembership={setSelectedMembership}
+          />
+        )}
         {activeSection === 'juris' && JURIS_PREMIUM_UNLOCKED && <JurisPremiumScreen onNavigate={setActiveSection} />}
         {activeSection === 'juris' && !JURIS_PREMIUM_UNLOCKED && <DashboardScreen onNavigate={setActiveSection} />}
         {activeSection === 'configuracion' && (
           <ConfiguracionScreen
             email={displayEmail}
+            selectedMembership={selectedMembership}
             profileSettings={profileSettings}
             onProfileSettingsChange={updateProfileSettings}
             onNavigate={setActiveSection}
@@ -922,35 +1175,470 @@ function LaboralScreen() {
   );
 }
 
-function TeamChatScreen() {
+function TeamChatScreen({
+  currentUserId,
+  memberships,
+  selectedMembership,
+  loadingMemberships,
+  membershipError,
+  onRefreshMemberships,
+  onSelectMembership,
+}: {
+  currentUserId: string;
+  memberships: DespachoMember[];
+  selectedMembership: DespachoMember | null;
+  loadingMemberships: boolean;
+  membershipError: string;
+  onRefreshMemberships: () => Promise<void>;
+  onSelectMembership: (membership: DespachoMember) => void;
+}) {
+  const [members, setMembers] = useState<DespachoMember[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [attachmentsByMessage, setAttachmentsByMessage] = useState<Record<string, ChatAttachment[]>>({});
+  const [attachmentUrls, setAttachmentUrls] = useState<Record<string, string>>({});
+  const [body, setBody] = useState('');
+  const [selectedFile, setSelectedFile] = useState<SelectedChatFile | null>(null);
+  const [loadingChat, setLoadingChat] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
+
+  const despachoId = selectedMembership?.despacho_id ?? '';
+  const memberByUserId = useMemo(() => new Map(members.map((member) => [member.user_id, member])), [members]);
+
+  const getGenericMemberName = useCallback(
+    (member?: DespachoMember) => {
+      if (!member) return 'Colaborador';
+      if (member.role === 'owner') return genericNameLabels.owner;
+
+      const sameRoleMembers = members
+        .filter((item) => item.role === member.role)
+        .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+      const roleIndex = sameRoleMembers.findIndex((item) => item.id === member.id) + 1;
+
+      return `${genericNameLabels[member.role]} ${roleIndex || 1}`;
+    },
+    [members],
+  );
+
+  const getMemberDisplayName = useCallback(
+    (member?: DespachoMember) => {
+      if (!member) return 'Colaborador';
+      return member.display_name?.trim() || getGenericMemberName(member);
+    },
+    [getGenericMemberName],
+  );
+
+  const fetchMembers = useCallback(async () => {
+    if (!despachoId) return;
+
+    const { data, error } = await supabase
+      .from('despacho_miembros')
+      .select('*')
+      .eq('despacho_id', despachoId)
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      setErrorMessage(error.message);
+      return;
+    }
+
+    setMembers((data ?? []) as DespachoMember[]);
+  }, [despachoId]);
+
+  const fetchAttachments = useCallback(async (messageIds: string[]) => {
+    if (messageIds.length === 0) {
+      setAttachmentsByMessage({});
+      setAttachmentUrls({});
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from('despacho_chat_adjuntos')
+      .select('*')
+      .in('message_id', messageIds)
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      setErrorMessage(error.message);
+      return;
+    }
+
+    const attachments = (data ?? []) as ChatAttachment[];
+    const grouped = attachments.reduce<Record<string, ChatAttachment[]>>((accumulator, attachment) => {
+      accumulator[attachment.message_id] = [...(accumulator[attachment.message_id] ?? []), attachment];
+      return accumulator;
+    }, {});
+
+    const signedUrlPairs = await Promise.all(
+      attachments.map(async (attachment) => {
+        const { data: signedData } = await supabase.storage
+          .from(CHAT_FILES_BUCKET)
+          .createSignedUrl(attachment.storage_path, 60 * 60);
+
+        return [attachment.id, signedData?.signedUrl ?? ''] as const;
+      }),
+    );
+
+    setAttachmentsByMessage(grouped);
+    setAttachmentUrls(Object.fromEntries(signedUrlPairs));
+  }, []);
+
+  const fetchMessages = useCallback(async () => {
+    if (!despachoId) return;
+
+    setLoadingChat(true);
+    const { data, error } = await supabase
+      .from('despacho_chat_mensajes')
+      .select('*')
+      .eq('despacho_id', despachoId)
+      .order('created_at', { ascending: false })
+      .limit(80);
+
+    if (error) {
+      setErrorMessage(error.message);
+      setLoadingChat(false);
+      return;
+    }
+
+    const nextMessages = ((data ?? []) as ChatMessage[]).reverse();
+    setMessages(nextMessages);
+    await fetchAttachments(nextMessages.map((message) => message.id));
+    setLoadingChat(false);
+  }, [despachoId, fetchAttachments]);
+
+  useEffect(() => {
+    setMessages([]);
+    setMembers([]);
+    setAttachmentsByMessage({});
+    setAttachmentUrls({});
+    setErrorMessage('');
+    setSelectedFile(null);
+    if (!despachoId) return;
+
+    fetchMembers();
+    fetchMessages();
+  }, [despachoId, fetchMembers, fetchMessages]);
+
+  useEffect(() => {
+    if (!despachoId) return;
+
+    const channel = supabase
+      .channel(`mobile-despacho-chat-${despachoId}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'despacho_chat_mensajes', filter: `despacho_id=eq.${despachoId}` },
+        () => {
+          fetchMessages();
+        },
+      )
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'despacho_chat_adjuntos', filter: `despacho_id=eq.${despachoId}` },
+        () => {
+          fetchMessages();
+        },
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'despacho_miembros', filter: `despacho_id=eq.${despachoId}` },
+        () => {
+          fetchMembers();
+        },
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [despachoId, fetchMembers, fetchMessages]);
+
+  const handlePickFile = async () => {
+    setErrorMessage('');
+
+    const result = await DocumentPicker.getDocumentAsync({
+      type: chatDocumentTypes,
+      multiple: false,
+      copyToCacheDirectory: true,
+    });
+
+    if (result.canceled || !result.assets?.[0]) return;
+
+    const asset = result.assets[0];
+    const assetFile = typeof File !== 'undefined' && asset.file instanceof File ? asset.file : undefined;
+    const size = asset.size ?? assetFile?.size ?? 0;
+    const mimeType = getSupportedFileType(asset.name, asset.mimeType);
+
+    if (!isAllowedChatFile(asset.name)) {
+      setErrorMessage('Solo se permiten imagenes, PDF, Word .doc y Word .docx.');
+      return;
+    }
+
+    if (size > MAX_CHAT_FILE_SIZE) {
+      setErrorMessage('El archivo debe pesar 25 MB o menos.');
+      return;
+    }
+
+    setSelectedFile({
+      uri: asset.uri,
+      name: asset.name,
+      mimeType,
+      size: size || 1,
+      file: assetFile,
+    });
+  };
+
+  const openAttachment = async (attachment: ChatAttachment) => {
+    const signedUrl = attachmentUrls[attachment.id];
+    if (!signedUrl) {
+      setErrorMessage('No se pudo generar el enlace del archivo.');
+      return;
+    }
+
+    await Linking.openURL(signedUrl);
+  };
+
+  const uploadAttachment = async (messageId: string, file: SelectedChatFile) => {
+    const storagePath = `${despachoId}/chat/${messageId}/${Date.now()}-${safeFileName(file.name)}`;
+    const uploadBody = file.file ?? (await fetch(file.uri).then((response) => response.arrayBuffer()));
+    const fileSize = file.file?.size ?? (uploadBody instanceof ArrayBuffer ? uploadBody.byteLength : file.size);
+
+    const { error: uploadError } = await supabase.storage
+      .from(CHAT_FILES_BUCKET)
+      .upload(storagePath, uploadBody, {
+        contentType: file.mimeType,
+        upsert: false,
+      });
+
+    if (uploadError) throw uploadError;
+
+    const { error: attachmentError } = await supabase.from('despacho_chat_adjuntos').insert([
+      {
+        message_id: messageId,
+        despacho_id: despachoId,
+        storage_path: storagePath,
+        file_name: file.name,
+        file_type: file.mimeType,
+        file_size: fileSize || file.size || 1,
+        uploaded_by: currentUserId,
+      },
+    ]);
+
+    if (attachmentError) throw attachmentError;
+  };
+
+  const sendMessage = async () => {
+    const trimmedBody = body.trim();
+    if (sending || !despachoId || (!trimmedBody && !selectedFile)) return;
+
+    setSending(true);
+    setErrorMessage('');
+
+    const messageBody = trimmedBody || `Archivo adjunto: ${selectedFile?.name ?? 'archivo'}`;
+    const { data, error } = await supabase
+      .from('despacho_chat_mensajes')
+      .insert([
+        {
+          despacho_id: despachoId,
+          sender_user_id: currentUserId,
+          body: messageBody,
+        },
+      ])
+      .select('id')
+      .single();
+
+    if (error || !data?.id) {
+      setErrorMessage(error?.message ?? 'No se pudo enviar el mensaje.');
+      setSending(false);
+      return;
+    }
+
+    const moderationDetection = detectModerationRisk(messageBody);
+    if (moderationDetection) {
+      void supabase.from('moderation_flags').insert([
+        {
+          despacho_id: despachoId,
+          message_id: data.id as string,
+          user_id: currentUserId,
+          matched_category: moderationDetection.category,
+          matched_terms: moderationDetection.terms,
+          excerpt: messageBody.slice(0, 500),
+        },
+      ]);
+    }
+
+    if (selectedFile) {
+      try {
+        await uploadAttachment(data.id as string, selectedFile);
+      } catch (uploadError) {
+        setErrorMessage(uploadError instanceof Error ? uploadError.message : 'Mensaje enviado, pero no se adjunto el archivo.');
+      }
+    }
+
+    setBody('');
+    setSelectedFile(null);
+    setSending(false);
+    fetchMessages();
+  };
+
+  if (loadingMemberships) {
+    return (
+      <View style={styles.stack}>
+        <ScreenHeader title="Chat de equipo" subtitle="Cargando despachos disponibles." />
+        <View style={styles.emptyState}>
+          <ActivityIndicator color="#1d4ed8" />
+          <Text style={styles.emptyStateText}>Preparando chat del despacho...</Text>
+        </View>
+      </View>
+    );
+  }
+
+  if (!selectedMembership) {
+    return (
+      <View style={styles.stack}>
+        <ScreenHeader title="Chat de equipo" subtitle="Necesitas pertenecer a un despacho para usar el chat." />
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyStateTitle}>Sin despacho seleccionado</Text>
+          <Text style={styles.emptyStateText}>
+            Crea o unete a un despacho desde la app de escritorio para activar mensajes y archivos.
+          </Text>
+          {Boolean(membershipError) && <Text style={styles.inlineError}>{membershipError}</Text>}
+        </View>
+        <Pressable style={styles.secondaryAction} onPress={onRefreshMemberships}>
+          <Text style={styles.secondaryActionText}>Actualizar despachos</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.stack}>
       <ScreenHeader
         title="Chat de equipo"
-        subtitle="Comunicacion interna del despacho para mensajes, documentos y avisos rapidos."
+        subtitle={`Mensajes y archivos de ${getDespachoName(selectedMembership)}.`}
       />
+
+      {memberships.length > 1 && (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.quickLinksRow}>
+          {memberships.map((membership) => {
+            const active = membership.id === selectedMembership.id;
+            return (
+              <Pressable
+                key={membership.id}
+                style={[styles.deskChip, active && styles.deskChipActive]}
+                onPress={() => onSelectMembership(membership)}
+              >
+                <Text style={[styles.deskChipText, active && styles.deskChipTextActive]}>{getDespachoName(membership)}</Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      )}
 
       <View style={styles.teamChatHeader}>
         <TeamChatIcon />
         <View style={styles.teamCopy}>
-          <Text style={styles.cardTitle}>Equipo del despacho</Text>
-          <Text style={styles.cardText}>Mensajes de colaboradores, archivos PDF, Word, imagenes y reportes internos.</Text>
+          <Text style={styles.cardTitle}>{getDespachoName(selectedMembership)}</Text>
+          <Text style={styles.cardText}>
+            {members.length} colaborador(es) - {messages.length} mensaje(s)
+          </Text>
         </View>
+        <Pressable style={styles.iconButton} onPress={fetchMessages}>
+          <Ionicons name="refresh-outline" size={18} color="#1d4ed8" />
+        </Pressable>
       </View>
 
-      <View style={styles.chatCard}>
-        <Text style={styles.botBubble}>Administrador 1: subi el acuerdo actualizado al expediente.</Text>
-        <Text style={styles.userBubble}>Colaborador 1: recibido, reviso y aviso si falta algo.</Text>
-        <Text style={styles.botBubble}>Solo lectura 1: puedo descargar el PDF para consulta?</Text>
-      </View>
+      {Boolean(errorMessage) && <Text style={styles.errorBox}>{errorMessage}</Text>}
 
-      <View style={styles.shortcutGrid}>
-        {['Adjuntar PDF', 'Subir imagen', 'Mandar Word', 'Ver archivos'].map((label) => (
-          <View key={label} style={styles.shortcutButton}>
-            <Text style={styles.shortcutText}>{label}</Text>
-            <Ionicons name="attach-outline" size={16} color="#1d4ed8" />
+      <View style={styles.chatMessagesCard}>
+        {loadingChat ? (
+          <View style={styles.emptyState}>
+            <ActivityIndicator color="#1d4ed8" />
+            <Text style={styles.emptyStateText}>Cargando mensajes...</Text>
           </View>
-        ))}
+        ) : messages.length === 0 ? (
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyStateTitle}>Todavia no hay mensajes</Text>
+            <Text style={styles.emptyStateText}>Escribe o adjunta un archivo para iniciar la conversacion del despacho.</Text>
+          </View>
+        ) : (
+          messages.map((message) => {
+            const member = memberByUserId.get(message.sender_user_id);
+            const isOwnMessage = message.sender_user_id === currentUserId;
+            const attachments = attachmentsByMessage[message.id] ?? [];
+            const memberColor = member?.profile_color || '#1d4ed8';
+
+            return (
+              <View key={message.id} style={[styles.messageRow, isOwnMessage && styles.messageRowOwn]}>
+                <View style={[styles.messageAvatar, { backgroundColor: memberColor }]}>
+                  <Text style={styles.messageAvatarText}>{getMemberDisplayName(member).slice(0, 1).toUpperCase()}</Text>
+                </View>
+                <View style={[styles.messageStack, isOwnMessage && styles.messageStackOwn]}>
+                  <View style={[styles.messageMetaRow, isOwnMessage && styles.messageMetaRowOwn]}>
+                    <Text style={[styles.messageName, { color: memberColor }]}>{getMemberDisplayName(member)}</Text>
+                    <Text style={styles.messageRole}>{member ? roleLabels[member.role] : 'Colaborador'}</Text>
+                  </View>
+                  <Text style={styles.messageTime}>{formatMessageTime(message.created_at)}</Text>
+                  <Text style={[styles.messageBubble, isOwnMessage && styles.messageBubbleOwn]}>{message.body}</Text>
+                  {attachments.map((attachment) => (
+                    <Pressable
+                      key={attachment.id}
+                      style={styles.attachmentRow}
+                      onPress={() => openAttachment(attachment)}
+                    >
+                      <Ionicons
+                        name={attachment.file_type.startsWith('image/') ? 'image-outline' : 'document-text-outline'}
+                        size={18}
+                        color="#1d4ed8"
+                      />
+                      <View style={styles.attachmentCopy}>
+                        <Text style={styles.attachmentName}>{attachment.file_name}</Text>
+                        <Text style={styles.attachmentSize}>{formatFileSize(attachment.file_size)}</Text>
+                      </View>
+                      <Ionicons name="open-outline" size={16} color="#64748b" />
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+            );
+          })
+        )}
+      </View>
+
+      <View style={styles.chatComposer}>
+        {selectedFile && (
+          <View style={styles.selectedFileRow}>
+            <Ionicons name="attach-outline" size={18} color="#1d4ed8" />
+            <View style={styles.attachmentCopy}>
+              <Text style={styles.attachmentName}>{selectedFile.name}</Text>
+              <Text style={styles.attachmentSize}>{formatFileSize(selectedFile.size)}</Text>
+            </View>
+            <Pressable style={styles.iconButton} onPress={() => setSelectedFile(null)}>
+              <Ionicons name="close-outline" size={18} color="#be123c" />
+            </Pressable>
+          </View>
+        )}
+        <TextInput
+          multiline
+          maxLength={2000}
+          onChangeText={setBody}
+          placeholder="Escribe un mensaje para el despacho..."
+          placeholderTextColor="#94a3b8"
+          style={styles.chatInput}
+          value={body}
+        />
+        <View style={styles.chatActionsRow}>
+          <Pressable style={styles.secondaryIconButton} onPress={handlePickFile}>
+            <Ionicons name="attach-outline" size={20} color="#1d4ed8" />
+          </Pressable>
+          <Text style={styles.messageCounter}>{body.length}/2000</Text>
+          <Pressable
+            style={[styles.sendButton, (sending || (!body.trim() && !selectedFile)) && styles.sendButtonDisabled]}
+            onPress={sendMessage}
+            disabled={sending || (!body.trim() && !selectedFile)}
+          >
+            {sending ? <ActivityIndicator color="#ffffff" /> : <Ionicons name="send-outline" size={20} color="#ffffff" />}
+          </Pressable>
+        </View>
       </View>
     </View>
   );
@@ -997,12 +1685,14 @@ function JurisPremiumScreen({ onNavigate }: { onNavigate: (section: Section) => 
 
 function ConfiguracionScreen({
   email,
+  selectedMembership,
   profileSettings,
   onProfileSettingsChange,
   onNavigate,
   onSignOut,
 }: {
   email: string;
+  selectedMembership: DespachoMember | null;
   profileSettings: ProfileSettings;
   onProfileSettingsChange: (settings: ProfileSettings) => void;
   onNavigate: (section: Section) => void;
@@ -1022,7 +1712,10 @@ function ConfiguracionScreen({
         </View>
         <View style={styles.profileCopy}>
           <Text style={styles.cardTitle}>{displayName}</Text>
-          <Text style={styles.cardText}>{profileSettings.roleLabel} - {email}</Text>
+          <Text style={styles.cardText}>
+            {selectedMembership ? roleLabels[selectedMembership.role] : profileSettings.roleLabel} - {email}
+          </Text>
+          {selectedMembership && <Text style={styles.cardText}>{getDespachoName(selectedMembership)}</Text>}
         </View>
       </View>
 
@@ -1472,6 +2165,27 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '900',
   },
+  deskChip: {
+    minHeight: 38,
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    borderRadius: 6,
+    paddingHorizontal: 12,
+    backgroundColor: '#ffffff',
+  },
+  deskChipActive: {
+    backgroundColor: '#1d4ed8',
+    borderColor: '#1d4ed8',
+  },
+  deskChipText: {
+    color: '#1d4ed8',
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  deskChipTextActive: {
+    color: '#ffffff',
+  },
   statGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -1704,6 +2418,13 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     lineHeight: 18,
   },
+  inlineError: {
+    marginTop: 10,
+    color: '#be123c',
+    fontSize: 13,
+    fontWeight: '800',
+    lineHeight: 18,
+  },
   selectLike: {
     minHeight: 48,
     flexDirection: 'row',
@@ -1804,6 +2525,182 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     padding: 14,
     backgroundColor: '#ffffff',
+  },
+  iconButton: {
+    width: 38,
+    height: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    borderRadius: 6,
+    backgroundColor: '#ffffff',
+  },
+  chatMessagesCard: {
+    gap: 12,
+    borderWidth: 1,
+    borderColor: '#dbeafe',
+    borderRadius: 6,
+    padding: 12,
+    backgroundColor: '#ffffff',
+  },
+  messageRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 9,
+  },
+  messageRowOwn: {
+    flexDirection: 'row-reverse',
+  },
+  messageAvatar: {
+    width: 34,
+    height: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 17,
+  },
+  messageAvatarText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  messageStack: {
+    maxWidth: '84%',
+    alignItems: 'flex-start',
+  },
+  messageStackOwn: {
+    alignItems: 'flex-end',
+  },
+  messageMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  messageMetaRowOwn: {
+    justifyContent: 'flex-end',
+  },
+  messageName: {
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  messageRole: {
+    color: '#64748b',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  messageTime: {
+    color: '#94a3b8',
+    fontSize: 11,
+    marginTop: 2,
+    marginBottom: 4,
+  },
+  messageBubble: {
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: '#f8fafc',
+    color: '#0f172a',
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  messageBubbleOwn: {
+    borderColor: '#1d4ed8',
+    backgroundColor: '#1d4ed8',
+    color: '#ffffff',
+  },
+  attachmentRow: {
+    width: '100%',
+    minHeight: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    borderRadius: 6,
+    marginTop: 7,
+    paddingHorizontal: 10,
+    backgroundColor: '#eff6ff',
+  },
+  attachmentCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  attachmentName: {
+    color: '#0f172a',
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  attachmentSize: {
+    color: '#64748b',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  chatComposer: {
+    gap: 10,
+    borderWidth: 1,
+    borderColor: '#dbeafe',
+    borderRadius: 6,
+    padding: 12,
+    backgroundColor: '#ffffff',
+  },
+  selectedFileRow: {
+    minHeight: 46,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    backgroundColor: '#eff6ff',
+  },
+  chatInput: {
+    minHeight: 84,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: '#ffffff',
+    color: '#0f172a',
+    fontSize: 15,
+    textAlignVertical: 'top',
+  },
+  chatActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  secondaryIconButton: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    borderRadius: 6,
+    backgroundColor: '#ffffff',
+  },
+  messageCounter: {
+    flex: 1,
+    color: '#94a3b8',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  sendButton: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 6,
+    backgroundColor: '#1d4ed8',
+  },
+  sendButtonDisabled: {
+    opacity: 0.45,
   },
   jurisHero: {
     flexDirection: 'row',

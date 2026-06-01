@@ -26,6 +26,7 @@ npm run typecheck
 - Sesion persistente en celular mediante AsyncStorage.
 - Panel, Expedientes, Movimientos, Calendario, Clientes, Laboral, Archivo, Chat de equipo y Configuracion.
 - Personalizacion local del perfil visible.
+- Chat de equipo conectado a Supabase por despacho, con mensajes, realtime, adjuntos y enlaces privados firmados.
 - Calendario local con recordatorios de audiencia usando notificaciones del dispositivo.
 - Juris queda reservado para desbloqueo premium.
 - Branding con el logo actual.
@@ -33,6 +34,6 @@ npm run typecheck
 ## Siguiente fase
 
 - Conectar cada pantalla a tablas reales por despacho.
-- Subir fotos, PDF y Word desde celular.
+- Sincronizar calendario local con Supabase.
 - Sincronizacion opcional con calendario externo del telefono.
 - Builds instalables con EAS para Android e iOS.
