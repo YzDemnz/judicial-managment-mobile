@@ -1,6 +1,7 @@
 import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { Session } from '@supabase/supabase-js';
 import { useEffect, useMemo, useState } from 'react';
 import {
@@ -30,6 +31,7 @@ type Section =
   | 'calendario'
   | 'clientes'
   | 'laboral'
+  | 'teamChat'
   | 'juris'
   | 'configuracion';
 
@@ -49,7 +51,16 @@ interface ReportItem {
   detail: string;
 }
 
+interface ProfileSettings {
+  displayName: string;
+  roleLabel: string;
+  profileInitial: string;
+  accentColor: string;
+}
+
 const logo = require('./assets/brand-icon.png');
+const PROFILE_STORAGE_KEY = 'judicial-mobile-profile-settings';
+const JURIS_PREMIUM_UNLOCKED = false;
 
 const navigation: Array<{ id: Section; name: string; icon: keyof typeof Ionicons.glyphMap }> = [
   { id: 'dashboard', name: 'Panel de Control', icon: 'grid-outline' },
@@ -96,6 +107,15 @@ const laboralGroups = [
   { title: 'Tribunal Laboral', detail: 'Procedimiento ordinario, especial y audiencias.' },
 ];
 
+const profileColors = ['#1d4ed8', '#0f766e', '#7c3aed', '#be123c', '#ca8a04'];
+
+const defaultProfileSettings: ProfileSettings = {
+  displayName: '',
+  roleLabel: 'Colaborador',
+  profileInitial: 'L',
+  accentColor: profileColors[0],
+};
+
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [loadingSession, setLoadingSession] = useState(true);
@@ -106,6 +126,7 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [profileSettings, setProfileSettings] = useState<ProfileSettings>(defaultProfileSettings);
 
   useEffect(() => {
     let mounted = true;
@@ -129,7 +150,29 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    let mounted = true;
+
+    AsyncStorage.getItem(PROFILE_STORAGE_KEY)
+      .then((savedProfile) => {
+        if (!mounted || !savedProfile) return;
+        const parsedProfile = JSON.parse(savedProfile) as Partial<ProfileSettings>;
+        setProfileSettings({ ...defaultProfileSettings, ...parsedProfile });
+      })
+      .catch(() => undefined);
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const updateProfileSettings = (nextSettings: ProfileSettings) => {
+    setProfileSettings(nextSettings);
+    AsyncStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(nextSettings)).catch(() => undefined);
+  };
+
   const displayEmail = useMemo(() => session?.user.email ?? 'Cuenta beta', [session?.user.email]);
+  const displayName = profileSettings.displayName.trim() || displayEmail.split('@')[0] || 'Colaborador';
 
   const handleAuth = async () => {
     setError('');
@@ -280,7 +323,10 @@ export default function App() {
             <Image source={logo} style={styles.headerLogo} />
             <View style={styles.headerText}>
               <Text style={styles.headerTitle}>Judicial Managment</Text>
-              <Text style={styles.headerSubtitle}>Despacho beta</Text>
+              <Text style={styles.headerSubtitle}>{displayName}</Text>
+            </View>
+            <View style={[styles.headerAvatar, { backgroundColor: profileSettings.accentColor }]}>
+              <Text style={styles.headerAvatarText}>{profileSettings.profileInitial.slice(0, 1).toUpperCase()}</Text>
             </View>
             <Pressable style={styles.headerIconButton} onPress={handleSignOut}>
               <Ionicons name="log-out-outline" size={19} color="#dbeafe" />
@@ -318,9 +364,17 @@ export default function App() {
         {activeSection === 'calendario' && <CalendarioScreen />}
         {activeSection === 'clientes' && <ClientesScreen />}
         {activeSection === 'laboral' && <LaboralScreen />}
-        {activeSection === 'juris' && <JurisScreen onNavigate={setActiveSection} />}
+        {activeSection === 'teamChat' && <TeamChatScreen />}
+        {activeSection === 'juris' && JURIS_PREMIUM_UNLOCKED && <JurisPremiumScreen onNavigate={setActiveSection} />}
+        {activeSection === 'juris' && !JURIS_PREMIUM_UNLOCKED && <DashboardScreen onNavigate={setActiveSection} />}
         {activeSection === 'configuracion' && (
-          <ConfiguracionScreen email={displayEmail} onSignOut={handleSignOut} />
+          <ConfiguracionScreen
+            email={displayEmail}
+            profileSettings={profileSettings}
+            onProfileSettingsChange={updateProfileSettings}
+            onNavigate={setActiveSection}
+            onSignOut={handleSignOut}
+          />
         )}
       </ScrollView>
     </View>
@@ -364,12 +418,12 @@ function DashboardScreen({ onNavigate }: { onNavigate: (section: Section) => voi
         ))}
       </View>
 
-      <Pressable style={styles.jurisCard} onPress={() => onNavigate('juris')}>
-        <JurisFace compact />
-        <View style={styles.jurisCopy}>
-          <Text style={styles.kicker}>Asistente interno</Text>
-          <Text style={styles.cardTitle}>Juris</Text>
-          <Text style={styles.cardText}>Bot del despacho para guiarte con modulos, pasos y tareas frecuentes.</Text>
+      <Pressable style={styles.teamCard} onPress={() => onNavigate('teamChat')}>
+        <TeamChatIcon />
+        <View style={styles.teamCopy}>
+          <Text style={styles.kicker}>Colaboracion</Text>
+          <Text style={styles.cardTitle}>Chat de equipo</Text>
+          <Text style={styles.cardText}>Mensajes, archivos y avisos internos entre colaboradores del despacho.</Text>
         </View>
         <Ionicons name="chatbubble-ellipses-outline" size={21} color="#ffffff" />
       </Pressable>
@@ -508,7 +562,41 @@ function LaboralScreen() {
   );
 }
 
-function JurisScreen({ onNavigate }: { onNavigate: (section: Section) => void }) {
+function TeamChatScreen() {
+  return (
+    <View style={styles.stack}>
+      <ScreenHeader
+        title="Chat de equipo"
+        subtitle="Comunicacion interna del despacho para mensajes, documentos y avisos rapidos."
+      />
+
+      <View style={styles.teamChatHeader}>
+        <TeamChatIcon />
+        <View style={styles.teamCopy}>
+          <Text style={styles.cardTitle}>Equipo del despacho</Text>
+          <Text style={styles.cardText}>Preparado para colaboradores, archivos PDF, Word, imagenes y reportes internos.</Text>
+        </View>
+      </View>
+
+      <View style={styles.chatCard}>
+        <Text style={styles.botBubble}>Administrador 1: subi el acuerdo actualizado al expediente.</Text>
+        <Text style={styles.userBubble}>Colaborador 1: recibido, reviso y aviso si falta algo.</Text>
+        <Text style={styles.botBubble}>Solo lectura 1: puedo descargar el PDF para consulta?</Text>
+      </View>
+
+      <View style={styles.shortcutGrid}>
+        {['Adjuntar PDF', 'Subir imagen', 'Mandar Word', 'Ver archivos'].map((label) => (
+          <View key={label} style={styles.shortcutButton}>
+            <Text style={styles.shortcutText}>{label}</Text>
+            <Ionicons name="attach-outline" size={16} color="#1d4ed8" />
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+function JurisPremiumScreen({ onNavigate }: { onNavigate: (section: Section) => void }) {
   return (
     <View style={styles.stack}>
       <View style={styles.jurisHero}>
@@ -547,18 +635,95 @@ function JurisScreen({ onNavigate }: { onNavigate: (section: Section) => void })
   );
 }
 
-function ConfiguracionScreen({ email, onSignOut }: { email: string; onSignOut: () => Promise<void> }) {
+function ConfiguracionScreen({
+  email,
+  profileSettings,
+  onProfileSettingsChange,
+  onNavigate,
+  onSignOut,
+}: {
+  email: string;
+  profileSettings: ProfileSettings;
+  onProfileSettingsChange: (settings: ProfileSettings) => void;
+  onNavigate: (section: Section) => void;
+  onSignOut: () => Promise<void>;
+}) {
+  const displayName = profileSettings.displayName.trim() || email.split('@')[0] || 'Colaborador';
+  const updateField = (key: keyof ProfileSettings, value: string) => {
+    onProfileSettingsChange({ ...profileSettings, [key]: value });
+  };
+
   return (
     <View style={styles.stack}>
       <ScreenHeader title="Configuracion" subtitle="Perfil, seguridad, reportes y datos de la cuenta." />
       <View style={styles.profileCard}>
-        <Image source={logo} style={styles.profileLogo} />
+        <View style={[styles.profileAvatar, { backgroundColor: profileSettings.accentColor }]}>
+          <Text style={styles.profileAvatarText}>{profileSettings.profileInitial.slice(0, 1).toUpperCase()}</Text>
+        </View>
         <View style={styles.profileCopy}>
-          <Text style={styles.cardTitle}>Sesion activa</Text>
-          <Text style={styles.cardText}>{email}</Text>
+          <Text style={styles.cardTitle}>{displayName}</Text>
+          <Text style={styles.cardText}>{profileSettings.roleLabel} - {email}</Text>
         </View>
       </View>
-      <CompactList items={['Personalizar perfil', 'Cambiar contrasena', 'Anadir telefono', 'Enviar reporte']} />
+
+      <View style={styles.formPreview}>
+        <Text style={styles.cardTitle}>Personalizacion</Text>
+        <Text style={styles.cardText}>Estos datos son los que veran los colaboradores en el chat de equipo.</Text>
+
+        <Text style={styles.inputLabel}>Nombre visible</Text>
+        <TextInput
+          onChangeText={(value) => updateField('displayName', value)}
+          placeholder="Lic. Martinez"
+          placeholderTextColor="#94a3b8"
+          style={styles.input}
+          value={profileSettings.displayName}
+        />
+
+        <Text style={styles.inputLabel}>Rol visible</Text>
+        <TextInput
+          onChangeText={(value) => updateField('roleLabel', value)}
+          placeholder="Administrador, Colaborador, Solo lectura"
+          placeholderTextColor="#94a3b8"
+          style={styles.input}
+          value={profileSettings.roleLabel}
+        />
+
+        <Text style={styles.inputLabel}>Inicial o distintivo</Text>
+        <TextInput
+          autoCapitalize="characters"
+          maxLength={1}
+          onChangeText={(value) => updateField('profileInitial', value || 'L')}
+          placeholder="L"
+          placeholderTextColor="#94a3b8"
+          style={styles.input}
+          value={profileSettings.profileInitial}
+        />
+
+        <Text style={styles.inputLabel}>Color del perfil</Text>
+        <View style={styles.colorRow}>
+          {profileColors.map((color) => {
+            const active = color === profileSettings.accentColor;
+            return (
+              <Pressable
+                key={color}
+                accessibilityRole="button"
+                style={[styles.colorSwatch, { backgroundColor: color }, active && styles.colorSwatchActive]}
+                onPress={() => updateField('accentColor', color)}
+              >
+                {active && <Ionicons name="checkmark" size={18} color="#ffffff" />}
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
+
+      <CompactList items={['Cambiar contrasena', 'Anadir telefono', 'Cambiar correo', 'Enviar reporte']} />
+      {JURIS_PREMIUM_UNLOCKED && (
+        <Pressable style={styles.primaryAction} onPress={() => onNavigate('juris')}>
+          <Text style={styles.primaryActionText}>Abrir Juris Premium</Text>
+          <Ionicons name="sparkles-outline" size={18} color="#ffffff" />
+        </Pressable>
+      )}
       <Pressable style={styles.secondaryAction} onPress={() => Linking.openURL(PORTAL_URL)}>
         <Text style={styles.secondaryActionText}>Abrir portal web</Text>
       </Pressable>
@@ -612,6 +777,22 @@ function CompactList({ items }: { items: string[] }) {
           <Text style={styles.listText}>{item}</Text>
         </View>
       ))}
+    </View>
+  );
+}
+
+function TeamChatIcon() {
+  return (
+    <View style={styles.teamIcon}>
+      <View style={[styles.teamIconAvatar, styles.teamIconAvatarLeft]}>
+        <Text style={styles.teamIconText}>A</Text>
+      </View>
+      <View style={[styles.teamIconAvatar, styles.teamIconAvatarCenter]}>
+        <Text style={styles.teamIconText}>C</Text>
+      </View>
+      <View style={[styles.teamIconAvatar, styles.teamIconAvatarRight]}>
+        <Text style={styles.teamIconText}>L</Text>
+      </View>
     </View>
   );
 }
@@ -832,6 +1013,20 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 2,
   },
+  headerAvatar: {
+    width: 38,
+    height: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.28)',
+    borderRadius: 19,
+  },
+  headerAvatarText: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '900',
+  },
   headerIconButton: {
     width: 40,
     height: 40,
@@ -987,7 +1182,7 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     backgroundColor: '#dbeafe',
   },
-  jurisCard: {
+  teamCard: {
     minHeight: 118,
     flexDirection: 'row',
     alignItems: 'center',
@@ -998,7 +1193,7 @@ const styles = StyleSheet.create({
     padding: 15,
     backgroundColor: '#ffffff',
   },
-  jurisCopy: {
+  teamCopy: {
     flex: 1,
   },
   kicker: {
@@ -1176,6 +1371,17 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
   },
+  teamChatHeader: {
+    minHeight: 112,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 13,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    borderRadius: 6,
+    padding: 14,
+    backgroundColor: '#ffffff',
+  },
   jurisHero: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1254,8 +1460,37 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
   },
+  profileAvatar: {
+    width: 54,
+    height: 54,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 27,
+  },
+  profileAvatarText: {
+    color: '#ffffff',
+    fontSize: 22,
+    fontWeight: '900',
+  },
   profileCopy: {
     flex: 1,
+  },
+  colorRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 2,
+  },
+  colorSwatch: {
+    width: 38,
+    height: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: 'transparent',
+    borderRadius: 19,
+  },
+  colorSwatchActive: {
+    borderColor: '#0f172a',
   },
   primaryAction: {
     minHeight: 50,
@@ -1295,6 +1530,43 @@ const styles = StyleSheet.create({
   dangerActionText: {
     color: '#ffffff',
     fontSize: 15,
+    fontWeight: '900',
+  },
+  teamIcon: {
+    width: 58,
+    height: 58,
+    justifyContent: 'center',
+  },
+  teamIconAvatar: {
+    position: 'absolute',
+    width: 35,
+    height: 35,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#ffffff',
+    borderRadius: 18,
+    backgroundColor: '#1d4ed8',
+  },
+  teamIconAvatarLeft: {
+    left: 0,
+    top: 16,
+    backgroundColor: '#0f766e',
+  },
+  teamIconAvatarCenter: {
+    left: 12,
+    top: 0,
+    zIndex: 2,
+    backgroundColor: '#1d4ed8',
+  },
+  teamIconAvatarRight: {
+    right: 0,
+    top: 16,
+    backgroundColor: '#7c3aed',
+  },
+  teamIconText: {
+    color: '#ffffff',
+    fontSize: 13,
     fontWeight: '900',
   },
   jurisFace: {
