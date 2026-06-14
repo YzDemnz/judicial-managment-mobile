@@ -8,6 +8,7 @@ import type { Session } from '@supabase/supabase-js';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Image,
   KeyboardAvoidingView,
   Linking,
@@ -21,6 +22,13 @@ import {
   View,
 } from 'react-native';
 import { PORTAL_CONFIRM_URL, PORTAL_URL } from './src/config';
+import {
+  checkForMobileUpdate,
+  currentMobileBuild,
+  currentMobileVersion,
+  openMobileUpdate,
+  type MobileReleaseManifest,
+} from './src/lib/appUpdates';
 import { supabase } from './src/lib/supabase';
 
 type AuthMode = 'login' | 'signup';
@@ -161,6 +169,8 @@ const CHAT_FILES_BUCKET = 'despacho-chat-files';
 const DOCUMENT_FILES_BUCKET = 'despacho-document-files';
 const MAX_CHAT_FILE_SIZE = 25 * 1024 * 1024;
 const JURIS_PREMIUM_UNLOCKED = false;
+const UPDATE_PROMPT_STORAGE_KEY = 'judicial-mobile-last-update-prompt';
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 const navigation: Array<{ id: Section; name: string; icon: keyof typeof Ionicons.glyphMap }> = [
   { id: 'dashboard', name: 'Panel de Control', icon: 'grid-outline' },
@@ -612,6 +622,9 @@ export default function App() {
   const [selectedMembership, setSelectedMembership] = useState<DespachoMember | null>(null);
   const [loadingMemberships, setLoadingMemberships] = useState(false);
   const [membershipError, setMembershipError] = useState('');
+  const [availableUpdate, setAvailableUpdate] = useState<MobileReleaseManifest | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [updateMessage, setUpdateMessage] = useState('');
 
   useEffect(() => {
     let mounted = true;
@@ -634,6 +647,80 @@ export default function App() {
       subscription.unsubscribe();
     };
   }, []);
+
+  const installAvailableUpdate = useCallback(async (release: MobileReleaseManifest | null) => {
+    if (!release) return;
+
+    try {
+      await openMobileUpdate(release);
+    } catch (updateError) {
+      Alert.alert(
+        'No se pudo abrir la descarga',
+        updateError instanceof Error ? updateError.message : 'Intenta nuevamente desde Configuracion.',
+      );
+    }
+  }, []);
+
+  const checkForUpdates = useCallback(async (manual = false) => {
+    if (Platform.OS !== 'android') {
+      if (manual) {
+        Alert.alert('Actualizaciones', 'La comprobacion automatica se habilita en la app Android instalada.');
+      }
+      return;
+    }
+
+    setCheckingUpdate(true);
+    setUpdateMessage('');
+
+    try {
+      const result = await checkForMobileUpdate();
+      if (result.updateAvailable && result.release) {
+        const release = result.release;
+        setAvailableUpdate(release);
+        setUpdateMessage(`La version ${release.version} esta lista para instalar.`);
+
+        const lastPrompt = await AsyncStorage.getItem(UPDATE_PROMPT_STORAGE_KEY);
+        const promptKey = `${release.version}:${new Date().toISOString().slice(0, 10)}`;
+        if (manual || lastPrompt !== promptKey) {
+          await AsyncStorage.setItem(UPDATE_PROMPT_STORAGE_KEY, promptKey);
+          const releaseNotes = release.notes.slice(0, 3).join('\n');
+          Alert.alert(
+            `Actualizacion ${release.version} disponible`,
+            `${releaseNotes}\n\nAndroid te pedira confirmar la instalacion.`,
+            [
+              { text: 'Mas tarde', style: 'cancel' },
+              { text: 'Descargar', onPress: () => void installAvailableUpdate(release) },
+            ],
+          );
+        }
+        return;
+      }
+
+      setAvailableUpdate(null);
+      setUpdateMessage(`Tienes la version mas reciente (${result.currentVersion}).`);
+      if (manual) {
+        Alert.alert('Aplicacion actualizada', `Ya tienes la version ${result.currentVersion}.`);
+      }
+    } catch (updateError) {
+      const nextMessage =
+        updateError instanceof Error ? updateError.message : 'No se pudo comprobar la actualizacion.';
+      setUpdateMessage(nextMessage);
+      if (manual) {
+        Alert.alert('No se pudo comprobar', `${nextMessage}\n\nRevisa tu conexion e intenta nuevamente.`);
+      }
+    } finally {
+      setCheckingUpdate(false);
+    }
+  }, [installAvailableUpdate]);
+
+  useEffect(() => {
+    void checkForUpdates(false);
+    const intervalId = setInterval(() => {
+      void checkForUpdates(false);
+    }, UPDATE_CHECK_INTERVAL_MS);
+
+    return () => clearInterval(intervalId);
+  }, [checkForUpdates]);
 
   const fetchMemberships = useCallback(async () => {
     if (!session?.user.id) {
@@ -1031,6 +1118,21 @@ export default function App() {
         </SafeAreaView>
       </LinearGradient>
 
+      {availableUpdate && (
+        <View style={styles.updateBanner}>
+          <View style={styles.updateBannerIcon}>
+            <Ionicons name="cloud-download-outline" size={21} color="#f8fafc" />
+          </View>
+          <View style={styles.updateBannerCopy}>
+            <Text style={styles.updateBannerTitle}>Version {availableUpdate.version} disponible</Text>
+            <Text style={styles.updateBannerText}>Descarga la mejora y confirma la instalacion en Android.</Text>
+          </View>
+          <Pressable style={styles.updateBannerButton} onPress={() => void installAvailableUpdate(availableUpdate)}>
+            <Text style={styles.updateBannerButtonText}>Instalar</Text>
+          </Pressable>
+        </View>
+      )}
+
       <ScrollView style={styles.content} contentContainerStyle={styles.contentInner}>
         {activeSection === 'dashboard' && <DashboardScreen onNavigate={setActiveSection} />}
         {activeSection === 'totalExpedientes' && <TotalExpedientesScreen onNavigate={setActiveSection} />}
@@ -1077,6 +1179,13 @@ export default function App() {
             onProfileSettingsChange={updateProfileSettings}
             onNavigate={setActiveSection}
             onSignOut={handleSignOut}
+            appVersion={currentMobileVersion}
+            appBuild={currentMobileBuild}
+            availableUpdate={availableUpdate}
+            checkingUpdate={checkingUpdate}
+            updateMessage={updateMessage}
+            onCheckForUpdates={() => checkForUpdates(true)}
+            onInstallUpdate={() => installAvailableUpdate(availableUpdate)}
           />
         )}
       </ScrollView>
@@ -2458,6 +2567,13 @@ function ConfiguracionScreen({
   onProfileSettingsChange,
   onNavigate,
   onSignOut,
+  appVersion,
+  appBuild,
+  availableUpdate,
+  checkingUpdate,
+  updateMessage,
+  onCheckForUpdates,
+  onInstallUpdate,
 }: {
   email: string;
   selectedMembership: DespachoMember | null;
@@ -2465,6 +2581,13 @@ function ConfiguracionScreen({
   onProfileSettingsChange: (settings: ProfileSettings) => void;
   onNavigate: (section: Section) => void;
   onSignOut: () => Promise<void>;
+  appVersion: string;
+  appBuild: number;
+  availableUpdate: MobileReleaseManifest | null;
+  checkingUpdate: boolean;
+  updateMessage: string;
+  onCheckForUpdates: () => void;
+  onInstallUpdate: () => void;
 }) {
   const displayName = profileSettings.displayName.trim() || email.split('@')[0] || 'Colaborador';
   const updateField = (key: keyof ProfileSettings, value: string) => {
@@ -2535,6 +2658,44 @@ function ConfiguracionScreen({
               </Pressable>
             );
           })}
+        </View>
+      </View>
+
+      <View style={styles.updateCard}>
+        <View style={styles.updateCardHeader}>
+          <View style={styles.updateCardIcon}>
+            <Ionicons name="phone-portrait-outline" size={21} color="#d4ab4e" />
+          </View>
+          <View style={styles.updateCardCopy}>
+            <Text style={styles.cardTitle}>Actualizaciones de la app</Text>
+            <Text style={styles.cardText}>Version instalada: {appVersion} ({appBuild})</Text>
+          </View>
+        </View>
+        <Text style={styles.cardText}>
+          La aplicacion revisa nuevas versiones al abrirse y periodicamente mientras esta en uso.
+        </Text>
+        {Boolean(updateMessage) && <Text style={styles.updateStatusText}>{updateMessage}</Text>}
+        <View style={styles.updateActions}>
+          <Pressable
+            style={[styles.secondaryActionCompact, styles.updateAction]}
+            onPress={onCheckForUpdates}
+            disabled={checkingUpdate}
+          >
+            {checkingUpdate ? (
+              <ActivityIndicator color="#1d4ed8" />
+            ) : (
+              <>
+                <Ionicons name="refresh-outline" size={18} color="#1d4ed8" />
+                <Text style={styles.secondaryActionCompactText}>Buscar actualizacion</Text>
+              </>
+            )}
+          </Pressable>
+          {availableUpdate && (
+            <Pressable style={[styles.primaryAction, styles.updateAction]} onPress={onInstallUpdate}>
+              <Text style={styles.primaryActionText}>Instalar {availableUpdate.version}</Text>
+              <Ionicons name="download-outline" size={18} color="#ffffff" />
+            </Pressable>
+          )}
         </View>
       </View>
 
@@ -2886,6 +3047,54 @@ const styles = StyleSheet.create({
   },
   navTextActive: {
     color: '#1d4ed8',
+  },
+  updateBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#334155',
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    backgroundColor: '#172033',
+  },
+  updateBannerIcon: {
+    width: 38,
+    height: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#475569',
+    borderRadius: 6,
+    backgroundColor: '#243042',
+  },
+  updateBannerCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  updateBannerTitle: {
+    color: '#f8fafc',
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  updateBannerText: {
+    marginTop: 2,
+    color: '#cbd5e1',
+    fontSize: 11,
+    lineHeight: 16,
+  },
+  updateBannerButton: {
+    minHeight: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 6,
+    paddingHorizontal: 13,
+    backgroundColor: '#d4ab4e',
+  },
+  updateBannerButtonText: {
+    color: '#0c1424',
+    fontSize: 12,
+    fontWeight: '900',
   },
   content: {
     flex: 1,
@@ -3688,6 +3897,49 @@ const styles = StyleSheet.create({
     fontWeight: '900',
   },
   profileCopy: {
+    flex: 1,
+  },
+  updateCard: {
+    gap: 12,
+    borderWidth: 1,
+    borderColor: '#d9c57d',
+    borderRadius: 6,
+    padding: 14,
+    backgroundColor: '#fffdf5',
+  },
+  updateCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 11,
+  },
+  updateCardIcon: {
+    width: 42,
+    height: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#ead999',
+    borderRadius: 6,
+    backgroundColor: '#0c1424',
+  },
+  updateCardCopy: {
+    flex: 1,
+  },
+  updateStatusText: {
+    borderLeftWidth: 3,
+    borderLeftColor: '#d4ab4e',
+    paddingLeft: 10,
+    color: '#475569',
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  updateActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  updateAction: {
+    minWidth: 150,
     flex: 1,
   },
   colorRow: {

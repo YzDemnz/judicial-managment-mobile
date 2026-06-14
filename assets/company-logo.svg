@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">MR Legal</title>
+  <desc id="desc">Escudo azul gris con balanza, libro y monograma MR.</desc>
+  <defs>
+    <linearGradient id="shieldFill" x1="60" y1="24" x2="196" y2="232" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2d4158" />
+      <stop offset="1" stop-color="#152535" />
+    </linearGradient>
+  </defs>
+  <path d="M128 16 216 48v78c0 54-36 98-88 126-52-28-88-72-88-126V48l88-32Z" fill="#0b1724" />
+  <path d="M128 28 202 55v68c0 45-29 82-74 108-45-26-74-63-74-108V55l74-27Z" fill="url(#shieldFill)" stroke="#c8b06a" stroke-width="4" />
+  <path d="M128 55v78M78 80h100M78 80 58 124M78 80l20 44M178 80l-20 44M178 80l20 44" fill="none" stroke="#c8b06a" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M49 124h58c-5 15-16 25-29 25s-24-10-29-25Zm100 0h58c-5 15-16 25-29 25s-24-10-29-25Z" fill="#c8b06a" />
+  <path d="M89 158c23-10 55-10 78 0v23c-23-10-55-10-78 0v-23Z" fill="#f6f1e4" stroke="#c8b06a" stroke-width="4" />
+  <path d="M112 143c24-26 44-48 49-76-24 15-45 33-63 66l14 10Z" fill="#d8c17a" stroke="#f6f1e4" stroke-width="3" stroke-linejoin="round" />
+  <path d="M128 158v24M68 172c12 18 31 31 52 36M188 172c-12 18-31 31-52 36" fill="none" stroke="#c8b06a" stroke-width="6" stroke-linecap="round" />
+  <text x="128" y="221" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="38" font-weight="700" letter-spacing="-2" fill="#f6f1e4">MR</text>
+</svg>

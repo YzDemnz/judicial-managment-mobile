@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "Judicial Managment Mobile",
+    "name": "Judicial Managment",
     "slug": "judicial-managment-mobile",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "judicialmanagmentmobile",
@@ -11,20 +11,36 @@
       [
         "expo-notifications",
         {
-          "color": "#1d4ed8",
+          "icon": "./assets/notification-icon.png",
+          "color": "#d4ab4e",
           "defaultChannel": "audiencias"
         }
       ],
-      "expo-font"
+      "expo-font",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 190,
+          "resizeMode": "contain",
+          "backgroundColor": "#0c1424",
+          "dark": {
+            "image": "./assets/splash-icon.png",
+            "backgroundColor": "#0c1424"
+          }
+        }
+      ]
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.mrlegal.judicialmanagment.mobile"
+      "bundleIdentifier": "com.mrlegal.judicialmanagment.mobile",
+      "buildNumber": "2"
     },
     "android": {
       "package": "com.mrlegal.judicialmanagment.mobile",
+      "versionCode": 2,
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#0c1424",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
@@ -33,6 +49,13 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "releaseNotes": [
+        "Actualizaciones automaticas disponibles desde Configuracion.",
+        "Nuevo icono oficial de Judicial Managment en Android.",
+        "Mejoras en la identidad visual de inicio y notificaciones."
+      ]
     }
   }
 }
