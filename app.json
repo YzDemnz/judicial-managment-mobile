@@ -29,6 +29,29 @@
             "backgroundColor": "#0c1424"
           }
         }
+      ],
+      "expo-sharing",
+      "@react-native-community/datetimepicker",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Judicial Managment usa tus fotos solo cuando eliges adjuntar evidencia a un expediente.",
+          "cameraPermission": "Judicial Managment usa la camara para digitalizar documentos juridicos.",
+          "microphonePermission": false
+        }
+      ],
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Permite que Judicial Managment proteja el acceso a los datos del despacho."
+        }
+      ],
+      [
+        "expo-calendar",
+        {
+          "calendarPermission": "Permite copiar audiencias de Judicial Managment al calendario del dispositivo.",
+          "remindersPermission": "Permite crear recordatorios de audiencias en el dispositivo."
+        }
       ]
     ],
     "ios": {

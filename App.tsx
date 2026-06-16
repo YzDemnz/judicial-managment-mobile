@@ -2,16 +2,25 @@ import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import * as Calendar from 'expo-calendar';
 import * as DocumentPicker from 'expo-document-picker';
+import { File, Paths } from 'expo-file-system';
+import * as ImagePicker from 'expo-image-picker';
+import * as LocalAuthentication from 'expo-local-authentication';
+import { useNetworkState } from 'expo-network';
 import * as Notifications from 'expo-notifications';
+import * as Sharing from 'expo-sharing';
 import type { Session } from '@supabase/supabase-js';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   Image,
   KeyboardAvoidingView,
   Linking,
+  Modal,
   Platform,
   Pressable,
   SafeAreaView,
@@ -42,8 +51,11 @@ type Section =
   | 'clientes'
   | 'laboral'
   | 'teamChat'
-  | 'juris'
+  | 'despachos'
+  | 'more'
   | 'configuracion';
+
+type QuickAction = 'expediente' | 'movimiento' | 'audiencia' | 'cliente' | 'scan';
 
 type Tone = 'blue' | 'green' | 'orange' | 'cyan' | 'slate' | 'indigo';
 
@@ -71,11 +83,14 @@ interface ProfileSettings {
 interface CalendarEvent {
   id: string;
   title: string;
+  description?: string;
   dateInput: string;
   timeInput: string;
   eventAt: string;
   notificationIds: string[];
   createdAt: string;
+  expedienteId?: string | null;
+  movimientoId?: string | null;
 }
 
 type MateriaJuzgado = 'Mercantil' | 'Civil' | 'Familiar' | 'Letrado' | 'Penal';
@@ -141,6 +156,44 @@ interface MobileMovimiento {
   created_at: string;
 }
 
+interface MobileCliente {
+  id: string;
+  nombre: string;
+  monto_pactado: number;
+  total_adeudo: number;
+  despacho_id?: string | null;
+  created_at: string;
+}
+
+type LaboralSeccion = 'conciliacion' | 'junta_local' | 'tribunal_laboral';
+type LaboralProcedimiento = 'normal' | 'especial';
+
+interface MobileLaboralAsunto {
+  id: string;
+  despacho_id: string;
+  seccion: LaboralSeccion;
+  numero_expediente?: string | null;
+  partes: string;
+  procedimiento?: LaboralProcedimiento | null;
+  fecha_conciliacion?: string | null;
+  hoja_conciliacion?: boolean | null;
+  estatus: string;
+  notas: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface AppProfile {
+  id: string;
+  email?: string | null;
+  account_status?: 'active' | 'disabled' | 'banned';
+  subscription_status?: 'trial' | 'active' | 'past_due' | 'canceled' | 'manual';
+  ban_until?: string | null;
+  ban_reason?: string | null;
+  disabled_reason?: string | null;
+  trial_ends_at?: string | null;
+}
+
 interface ChatAttachment {
   id: string;
   message_id: string;
@@ -150,6 +203,18 @@ interface ChatAttachment {
   file_type: string;
   file_size: number;
   uploaded_by: string;
+  created_at: string;
+}
+
+interface MobileDocumentAttachment {
+  id: string;
+  target_type: 'expediente' | 'movimiento';
+  expediente_id?: string | null;
+  movimiento_id?: string | null;
+  storage_path: string;
+  file_name: string;
+  file_type: string;
+  file_size: number;
   created_at: string;
 }
 
@@ -164,22 +229,21 @@ interface SelectedChatFile {
 const logo = require('./assets/brand-icon.png');
 const PROFILE_STORAGE_KEY = 'judicial-mobile-profile-settings';
 const CALENDAR_EVENTS_STORAGE_KEY = 'judicial-mobile-calendar-events';
+const BIOMETRIC_LOCK_STORAGE_KEY = 'judicial-mobile-biometric-lock';
+const SELECTED_DESPACHO_STORAGE_KEY = 'judicial-mobile-selected-despacho';
 const NOTIFICATION_CHANNEL_ID = 'audiencias';
 const CHAT_FILES_BUCKET = 'despacho-chat-files';
 const DOCUMENT_FILES_BUCKET = 'despacho-document-files';
 const MAX_CHAT_FILE_SIZE = 25 * 1024 * 1024;
-const JURIS_PREMIUM_UNLOCKED = false;
 const UPDATE_PROMPT_STORAGE_KEY = 'judicial-mobile-last-update-prompt';
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 const navigation: Array<{ id: Section; name: string; icon: keyof typeof Ionicons.glyphMap }> = [
-  { id: 'dashboard', name: 'Panel de Control', icon: 'grid-outline' },
-  { id: 'expedientes', name: 'Expedientes', icon: 'document-text-outline' },
-  { id: 'movimientos', name: 'Movimientos', icon: 'document-attach-outline' },
-  { id: 'calendario', name: 'Calendario', icon: 'calendar-outline' },
-  { id: 'clientes', name: 'Clientes', icon: 'people-outline' },
-  { id: 'laboral', name: 'Laboral', icon: 'business-outline' },
-  { id: 'configuracion', name: 'Configuracion', icon: 'settings-outline' },
+  { id: 'dashboard', name: 'Inicio', icon: 'home-outline' },
+  { id: 'expedientes', name: 'Expedientes', icon: 'folder-open-outline' },
+  { id: 'calendario', name: 'Agenda', icon: 'calendar-outline' },
+  { id: 'teamChat', name: 'Chat', icon: 'chatbubbles-outline' },
+  { id: 'more', name: 'Mas', icon: 'grid-outline' },
 ];
 
 const quickLinks = [
@@ -187,17 +251,6 @@ const quickLinks = [
   { label: 'Poder en Linea', name: 'Poder Judicial de Coahuila', url: 'https://poderenlinea.gob.mx/' },
   { label: 'SCJN', name: 'Suprema Corte de Justicia de la Nacion', url: 'https://www.scjn.gob.mx/' },
 ];
-
-const statCards: StatCard[] = [
-  { title: 'Total Expedientes', value: '0', icon: 'document-text-outline', tone: 'blue', target: 'totalExpedientes' },
-  { title: 'Expedientes Activos', value: '0', icon: 'trending-up-outline', tone: 'green', target: 'expedientes' },
-  { title: 'Clientes', value: '0', icon: 'people-outline', tone: 'orange', target: 'clientes' },
-  { title: 'Movimientos', value: '0', icon: 'document-attach-outline', tone: 'cyan', target: 'movimientos' },
-  { title: 'Asuntos Laborales', value: '0', icon: 'business-outline', tone: 'slate', target: 'laboral' },
-  { title: 'Archivo', value: '0', icon: 'archive-outline', tone: 'indigo', target: 'archivo' },
-];
-
-const reportItems: ReportItem[] = [];
 
 const materiasJuzgado: MateriaJuzgado[] = ['Mercantil', 'Civil', 'Familiar', 'Letrado', 'Penal'];
 
@@ -259,12 +312,6 @@ const movimientoTipos = [
   'Resolucion',
   'Apelacion',
   'Otros',
-];
-
-const laboralGroups = [
-  { title: 'Conciliacion', detail: 'Nombre de partes, fecha y hoja de conciliacion.' },
-  { title: 'Junta Local de Conciliacion y Arbitraje', detail: 'Expedientes laborales previos al nuevo sistema.' },
-  { title: 'Tribunal Laboral', detail: 'Procedimiento ordinario, especial y audiencias.' },
 ];
 
 const profileColors = ['#1d4ed8', '#0f766e', '#7c3aed', '#be123c', '#ca8a04'];
@@ -349,6 +396,22 @@ const formatCalendarDate = (isoDate: string) => {
   }).format(new Date(isoDate));
 };
 
+const getAudienceRecommendation = (isoDate: string) => {
+  const eventDate = new Date(isoDate);
+  const now = new Date();
+  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startEvent = new Date(eventDate.getFullYear(), eventDate.getMonth(), eventDate.getDate());
+  const days = Math.round((startEvent.getTime() - startToday.getTime()) / (24 * 60 * 60 * 1000));
+  const time = new Intl.DateTimeFormat('es-MX', { hour: '2-digit', minute: '2-digit' }).format(eventDate);
+
+  if (days === 0) return `Es hoy a las ${time}. Confirma documentos y traslado.`;
+  if (days === 1) return `Es manana a las ${time}. Revisa el expediente hoy.`;
+  if (days > 1 && days <= 3) return `Faltan ${days} dias. Prepara promociones, pruebas y documentos.`;
+  if (days > 3 && days <= 7) return `Esta semana, en ${days} dias. Verifica pendientes.`;
+  if (days > 7) return `Faltan ${days} dias.`;
+  return `La audiencia estaba programada para ${formatCalendarDate(isoDate)}.`;
+};
+
 const getPermissionLabel = (status: NotificationPermissionStatus) => {
   if (status === 'granted') return 'Notificaciones activadas';
   if (status === 'denied') return 'Permiso bloqueado';
@@ -394,6 +457,13 @@ const formatFileSize = (size: number) => {
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 };
+
+const formatCurrency = (value: number) =>
+  new Intl.NumberFormat('es-MX', {
+    style: 'currency',
+    currency: 'MXN',
+    maximumFractionDigits: 2,
+  }).format(Number(value) || 0);
 
 const getDespachoName = (membership?: DespachoMember | null) => {
   return membership?.despacho?.nombre ?? 'Despacho';
@@ -496,6 +566,84 @@ const pickSupportedDocumentFile = async () => {
   };
 };
 
+const pickCameraImage = async () => {
+  if (Platform.OS === 'web') {
+    return { file: null, error: 'La camara esta disponible en la app instalada.' };
+  }
+
+  const permission = await ImagePicker.requestCameraPermissionsAsync();
+  if (!permission.granted) {
+    return { file: null, error: 'Autoriza el uso de la camara para digitalizar documentos.' };
+  }
+
+  const result = await ImagePicker.launchCameraAsync({
+    mediaTypes: ['images'],
+    quality: 0.82,
+    allowsEditing: false,
+  });
+
+  if (result.canceled || !result.assets?.[0]) return { file: null, error: '' };
+
+  const asset = result.assets[0];
+  const extension = asset.fileName ? getFileExtension(asset.fileName) : 'jpg';
+  const name = asset.fileName || `documento-${Date.now()}.${extension || 'jpg'}`;
+  const mimeType = asset.mimeType || 'image/jpeg';
+
+  return {
+    file: {
+      uri: asset.uri,
+      name,
+      mimeType,
+      size: asset.fileSize || 1,
+    } satisfies SelectedChatFile,
+    error: '',
+  };
+};
+
+const toDatabaseDateFromDate = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const toTimeInputValue = (date: Date) => {
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${hours}:${minutes}`;
+};
+
+const fromDatabaseCalendarEvent = (
+  row: {
+    id: string;
+    titulo: string;
+    descripcion?: string | null;
+    event_date: string;
+    event_time?: string | null;
+    expediente_id?: string | null;
+    movimiento_id?: string | null;
+    created_at: string;
+  },
+  localNotificationIds: string[] = [],
+): CalendarEvent => {
+  const timeInput = (row.event_time || '09:00').slice(0, 5);
+  const dateInput = toMexicanDateFromDatabase(row.event_date);
+  const eventDate = parseCalendarDate(dateInput, timeInput) ?? new Date(`${row.event_date}T${timeInput}:00`);
+
+  return {
+    id: row.id,
+    title: row.titulo,
+    description: row.descripcion || '',
+    dateInput,
+    timeInput,
+    eventAt: eventDate.toISOString(),
+    notificationIds: localNotificationIds,
+    createdAt: row.created_at,
+    expedienteId: row.expediente_id,
+    movimientoId: row.movimiento_id,
+  };
+};
+
 const uploadDocumentAttachment = async ({
   despachoId,
   targetType,
@@ -541,6 +689,27 @@ const uploadDocumentAttachment = async ({
     await supabase.storage.from(DOCUMENT_FILES_BUCKET).remove([storagePath]);
     throw insertError;
   }
+};
+
+const shareRemoteFile = async (url: string, fileName: string, mimeType: string) => {
+  if (Platform.OS === 'web') {
+    await Linking.openURL(url);
+    return;
+  }
+
+  const available = await Sharing.isAvailableAsync();
+  if (!available) {
+    await Linking.openURL(url);
+    return;
+  }
+
+  const destination = new File(Paths.cache, `${Date.now()}-${safeFileName(fileName)}`);
+  const downloadedFile = await File.downloadFileAsync(url, destination);
+  await Sharing.shareAsync(downloadedFile.uri, {
+    mimeType,
+    dialogTitle: `Compartir ${fileName}`,
+    UTI: mimeType,
+  });
 };
 
 const normalizeForModeration = (value: string) =>
@@ -606,6 +775,7 @@ const detectModerationRisk = (value: string) => {
 };
 
 export default function App() {
+  const networkState = useNetworkState();
   const [session, setSession] = useState<Session | null>(null);
   const [loadingSession, setLoadingSession] = useState(true);
   const [activeSection, setActiveSection] = useState<Section>('dashboard');
@@ -625,6 +795,14 @@ export default function App() {
   const [availableUpdate, setAvailableUpdate] = useState<MobileReleaseManifest | null>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateMessage, setUpdateMessage] = useState('');
+  const [quickActionsOpen, setQuickActionsOpen] = useState(false);
+  const [despachoPickerOpen, setDespachoPickerOpen] = useState(false);
+  const [quickAction, setQuickAction] = useState<{ type: QuickAction; nonce: number } | null>(null);
+  const [appProfile, setAppProfile] = useState<AppProfile | null>(null);
+  const [loadingProfile, setLoadingProfile] = useState(false);
+  const [biometricEnabled, setBiometricEnabled] = useState(false);
+  const [biometricLocked, setBiometricLocked] = useState(false);
+  const [biometricAvailable, setBiometricAvailable] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -647,6 +825,101 @@ export default function App() {
       subscription.unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    if (Platform.OS === 'web') {
+      setNotificationStatus('unsupported');
+      return;
+    }
+
+    void Notifications.getPermissionsAsync().then((permission) => {
+      setNotificationStatus(permission.status === 'granted' ? 'granted' : 'unknown');
+    });
+  }, []);
+
+  const unlockWithBiometrics = useCallback(async () => {
+    if (Platform.OS === 'web') {
+      setBiometricLocked(false);
+      return true;
+    }
+
+    const result = await LocalAuthentication.authenticateAsync({
+      promptMessage: 'Desbloquear Judicial Managment',
+      cancelLabel: 'Cancelar',
+      fallbackLabel: 'Usar bloqueo del dispositivo',
+      disableDeviceFallback: false,
+    });
+
+    if (result.success) {
+      setBiometricLocked(false);
+      return true;
+    }
+
+    return false;
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+
+    Promise.all([
+      AsyncStorage.getItem(BIOMETRIC_LOCK_STORAGE_KEY),
+      Platform.OS === 'web' ? Promise.resolve(false) : LocalAuthentication.hasHardwareAsync(),
+      Platform.OS === 'web' ? Promise.resolve(false) : LocalAuthentication.isEnrolledAsync(),
+    ])
+      .then(([savedPreference, hasHardware, isEnrolled]) => {
+        if (!mounted) return;
+        const available = Boolean(hasHardware && isEnrolled);
+        const enabled = savedPreference === 'true' && available;
+        setBiometricAvailable(available);
+        setBiometricEnabled(enabled);
+        setBiometricLocked(Boolean(session && enabled));
+      })
+      .catch(() => undefined);
+
+    return () => {
+      mounted = false;
+    };
+  }, [session?.user.id]);
+
+  useEffect(() => {
+    if (Platform.OS === 'web' || !biometricEnabled || !session) return undefined;
+
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'background' || nextState === 'inactive') {
+        setBiometricLocked(true);
+      }
+    });
+
+    return () => subscription.remove();
+  }, [biometricEnabled, session]);
+
+  useEffect(() => {
+    if (!session?.user.id) {
+      setAppProfile(null);
+      return;
+    }
+
+    let mounted = true;
+    setLoadingProfile(true);
+
+    void (async () => {
+      try {
+        const { data } = await supabase
+          .from('app_profiles')
+          .select('id,email,account_status,subscription_status,ban_until,ban_reason,disabled_reason,trial_ends_at')
+          .eq('id', session.user.id)
+          .maybeSingle();
+        if (!mounted) return;
+        setAppProfile((data as AppProfile | null) ?? null);
+      } finally {
+        if (mounted) setLoadingProfile(false);
+      }
+    })();
+
+    return () => {
+      mounted = false;
+    };
+  }, [session?.user.id]);
 
   const installAvailableUpdate = useCallback(async (release: MobileReleaseManifest | null) => {
     if (!release) return;
@@ -746,9 +1019,14 @@ export default function App() {
     }
 
     const activeMemberships = ((data ?? []) as DespachoMember[]).filter((membership) => !membership.despacho?.deleted_at);
+    const savedDespachoId = await AsyncStorage.getItem(SELECTED_DESPACHO_STORAGE_KEY).catch(() => null);
     setMemberships(activeMemberships);
     setSelectedMembership((current) => {
       if (current && activeMemberships.some((membership) => membership.id === current.id)) return current;
+      if (savedDespachoId) {
+        const savedMembership = activeMemberships.find((membership) => membership.despacho_id === savedDespachoId);
+        if (savedMembership) return savedMembership;
+      }
       return activeMemberships[0] ?? null;
     });
     setLoadingMemberships(false);
@@ -760,6 +1038,11 @@ export default function App() {
       setLoadingMemberships(false);
     });
   }, [fetchMemberships]);
+
+  const selectMembership = useCallback((membership: DespachoMember) => {
+    setSelectedMembership(membership);
+    void AsyncStorage.setItem(SELECTED_DESPACHO_STORAGE_KEY, membership.despacho_id);
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -775,6 +1058,63 @@ export default function App() {
     return () => {
       mounted = false;
     };
+  }, []);
+
+  useEffect(() => {
+    const despachoId = selectedMembership?.despacho_id;
+    if (!despachoId) {
+      setCalendarEvents([]);
+      return undefined;
+    }
+
+    let mounted = true;
+
+    const fetchCalendarEvents = async () => {
+      const savedEvents = await AsyncStorage.getItem(CALENDAR_EVENTS_STORAGE_KEY).catch(() => null);
+      const localEvents = savedEvents ? (JSON.parse(savedEvents) as CalendarEvent[]) : [];
+      const localNotifications = new Map(localEvents.map((event) => [event.id, event.notificationIds]));
+      const { data, error: calendarError } = await supabase
+        .from('calendario_eventos')
+        .select('id,titulo,descripcion,event_date,event_time,expediente_id,movimiento_id,created_at')
+        .eq('despacho_id', despachoId)
+        .order('event_date', { ascending: true })
+        .order('event_time', { ascending: true });
+
+      if (!mounted || calendarError) return;
+      const nextEvents = (data ?? []).map((row) =>
+        fromDatabaseCalendarEvent(row, localNotifications.get(row.id as string) ?? []),
+      );
+      saveCalendarEvents(nextEvents);
+    };
+
+    void fetchCalendarEvents();
+
+    const channel = supabase
+      .channel(`mobile-calendar-${despachoId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'calendario_eventos', filter: `despacho_id=eq.${despachoId}` },
+        () => void fetchCalendarEvents(),
+      )
+      .subscribe();
+
+    return () => {
+      mounted = false;
+      void supabase.removeChannel(channel);
+    };
+  }, [selectedMembership?.despacho_id]);
+
+  useEffect(() => {
+    if (Platform.OS === 'web') return undefined;
+
+    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+      const data = response.notification.request.content.data;
+      if (data?.type === 'calendar-event') {
+        setActiveSection('calendario');
+      }
+    });
+
+    return () => subscription.remove();
   }, []);
 
   useEffect(() => {
@@ -845,7 +1185,7 @@ export default function App() {
     return granted;
   };
 
-  const scheduleCalendarNotifications = async (title: string, eventDate: Date) => {
+  const scheduleCalendarNotifications = async (title: string, eventDate: Date, eventId?: string) => {
     if (Platform.OS === 'web') return [] as string[];
 
     const granted = await requestNotificationPermission();
@@ -869,7 +1209,7 @@ export default function App() {
         content: {
           title: 'Audiencia programada',
           body: notificationDate.body,
-          data: { type: 'calendar-event', title, eventAt: eventDate.toISOString() },
+          data: { type: 'calendar-event', title, eventAt: eventDate.toISOString(), eventId },
         },
         trigger: {
           type: Notifications.SchedulableTriggerInputTypes.DATE,
@@ -883,7 +1223,26 @@ export default function App() {
     return notificationIds;
   };
 
-  const createCalendarEvent = async (title: string, dateInput: string, timeInput: string) => {
+  const createCalendarEvent = async (
+    title: string,
+    dateInput: string,
+    timeInput: string,
+    options?: {
+      description?: string;
+      expedienteId?: string | null;
+      movimientoId?: string | null;
+      tipo?: 'audiencia' | 'vencimiento' | 'recordatorio' | 'otro';
+    },
+  ) => {
+    const despachoId = selectedMembership?.despacho_id;
+    if (!despachoId) {
+      return { ok: false, message: 'Selecciona un despacho para guardar la audiencia.' };
+    }
+
+    if (!canEditMembership(selectedMembership)) {
+      return { ok: false, message: 'Tu acceso es de solo lectura.' };
+    }
+
     const cleanTitle = title.trim() || 'Audiencia';
     const eventDate = parseCalendarDate(dateInput, timeInput);
 
@@ -895,15 +1254,41 @@ export default function App() {
       return { ok: false, message: 'La fecha debe ser futura para poder programar avisos.' };
     }
 
-    const notificationIds = await scheduleCalendarNotifications(cleanTitle, eventDate);
+    const { data, error: insertError } = await supabase
+      .from('calendario_eventos')
+      .insert([
+        {
+          despacho_id: despachoId,
+          expediente_id: options?.expedienteId ?? null,
+          movimiento_id: options?.movimientoId ?? null,
+          titulo: cleanTitle,
+          descripcion: options?.description?.trim() || '',
+          event_date: toDatabaseDateFromDate(eventDate),
+          event_time: `${toTimeInputValue(eventDate)}:00`,
+          tipo: options?.tipo ?? 'audiencia',
+          notify_day_before: true,
+          notify_same_day: true,
+        },
+      ])
+      .select('id,titulo,descripcion,event_date,event_time,expediente_id,movimiento_id,created_at')
+      .single();
+
+    if (insertError || !data?.id) {
+      return { ok: false, message: insertError?.message ?? 'No se pudo guardar la audiencia.' };
+    }
+
+    const notificationIds = await scheduleCalendarNotifications(cleanTitle, eventDate, data.id as string);
     const nextEvent: CalendarEvent = {
-      id: `${Date.now()}`,
+      id: data.id as string,
       title: cleanTitle,
+      description: options?.description?.trim() || '',
       dateInput: dateInput.trim(),
       timeInput: timeInput.trim() || '09:00',
       eventAt: eventDate.toISOString(),
       notificationIds,
-      createdAt: new Date().toISOString(),
+      createdAt: data.created_at as string,
+      expedienteId: options?.expedienteId ?? null,
+      movimientoId: options?.movimientoId ?? null,
     };
 
     saveCalendarEvents([...calendarEvents, nextEvent]);
@@ -929,7 +1314,74 @@ export default function App() {
       );
     }
 
+    const { error: deleteError } = await supabase.from('calendario_eventos').delete().eq('id', eventId);
+    if (deleteError) {
+      Alert.alert('No se pudo eliminar', deleteError.message);
+      return;
+    }
+
     saveCalendarEvents(calendarEvents.filter((item) => item.id !== eventId));
+  };
+
+  const addEventToDeviceCalendar = async (event: CalendarEvent) => {
+    if (Platform.OS === 'web') {
+      Alert.alert('Calendario del dispositivo', 'Esta opcion esta disponible en la app instalada.');
+      return;
+    }
+
+    const permission = await Calendar.requestCalendarPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('Permiso necesario', 'Autoriza el calendario para copiar esta audiencia al dispositivo.');
+      return;
+    }
+
+    try {
+      await Calendar.createEventInCalendarAsync({
+        title: event.title,
+        notes: event.description || 'Audiencia registrada en Judicial Managment',
+        startDate: new Date(event.eventAt),
+        endDate: new Date(new Date(event.eventAt).getTime() + 60 * 60 * 1000),
+        alarms: [{ relativeOffset: -24 * 60 }, { relativeOffset: 0 }],
+      });
+    } catch (calendarError) {
+      Alert.alert(
+        'No se pudo abrir el calendario',
+        calendarError instanceof Error ? calendarError.message : 'Intenta nuevamente.',
+      );
+    }
+  };
+
+  const setBiometricPreference = async (enabled: boolean) => {
+    if (enabled && !biometricAvailable) {
+      Alert.alert(
+        'Biometria no disponible',
+        'Configura huella o reconocimiento facial en el telefono antes de activar esta proteccion.',
+      );
+      return;
+    }
+
+    if (enabled) {
+      const unlocked = await unlockWithBiometrics();
+      if (!unlocked) return;
+    }
+
+    setBiometricEnabled(enabled);
+    setBiometricLocked(false);
+    await AsyncStorage.setItem(BIOMETRIC_LOCK_STORAGE_KEY, String(enabled));
+  };
+
+  const openQuickAction = (type: QuickAction) => {
+    setQuickActionsOpen(false);
+    const nextAction = { type, nonce: Date.now() };
+    setQuickAction(nextAction);
+
+    if (type === 'expediente' || type === 'scan') setActiveSection('expedientes');
+    if (type === 'movimiento' || type === 'audiencia') setActiveSection('movimientos');
+    if (type === 'cliente') setActiveSection('clientes');
+
+    setTimeout(() => {
+      setQuickAction((current) => (current?.nonce === nextAction.nonce ? null : current));
+    }, 1800);
   };
 
   const displayEmail = useMemo(() => session?.user.email ?? 'Cuenta', [session?.user.email]);
@@ -1075,6 +1527,53 @@ export default function App() {
     );
   }
 
+  if (loadingProfile) {
+    return (
+      <View style={styles.loadingPlainScreen}>
+        <Image source={logo} style={styles.loadingLogo} />
+        <ActivityIndicator color="#1d4ed8" size="large" />
+        <Text style={styles.loadingPlainText}>Validando tu cuenta</Text>
+      </View>
+    );
+  }
+
+  if (appProfile?.account_status === 'disabled' || appProfile?.account_status === 'banned') {
+    const banned = appProfile.account_status === 'banned';
+    return (
+      <View style={styles.blockedScreen}>
+        <Image source={logo} style={styles.loadingLogo} />
+        <Ionicons name={banned ? 'shield-outline' : 'pause-circle-outline'} size={52} color="#be123c" />
+        <Text style={styles.blockedTitle}>{banned ? 'Cuenta en revision' : 'Cuenta desactivada temporalmente'}</Text>
+        <Text style={styles.blockedText}>
+          {banned
+            ? appProfile.ban_reason || 'Detectamos una posible infraccion y el acceso esta suspendido mientras revisamos la cuenta.'
+            : appProfile.disabled_reason || 'La cuenta sera reactivada cuando termine la validacion de su informacion.'}
+        </Text>
+        {banned && appProfile.ban_until && (
+          <Text style={styles.blockedMeta}>Revision programada hasta {formatMessageTime(appProfile.ban_until)}</Text>
+        )}
+        <Pressable style={styles.secondaryAction} onPress={handleSignOut}>
+          <Text style={styles.secondaryActionText}>Cerrar sesion</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  if (biometricLocked) {
+    return (
+      <LinearGradient colors={['#020617', '#0f172a']} style={styles.biometricScreen}>
+        <Image source={logo} style={styles.loadingLogo} />
+        <Text style={styles.biometricTitle}>Judicial Managment bloqueado</Text>
+        <Text style={styles.biometricText}>Confirma tu identidad para consultar los datos del despacho.</Text>
+        <Pressable style={styles.biometricButton} onPress={() => void unlockWithBiometrics()}>
+          <Ionicons name="finger-print-outline" size={24} color="#0c1424" />
+          <Text style={styles.biometricButtonText}>Desbloquear</Text>
+        </Pressable>
+        <StatusBar style="light" />
+      </LinearGradient>
+    );
+  }
+
   return (
     <View style={styles.appShell}>
       <StatusBar style="light" />
@@ -1084,39 +1583,40 @@ export default function App() {
             <Image source={logo} style={styles.headerLogo} />
             <View style={styles.headerText}>
               <Text style={styles.headerTitle}>Judicial Managment</Text>
-              <Text style={styles.headerSubtitle}>
-                {selectedMembership ? `${displayName} - ${getDespachoName(selectedMembership)}` : displayName}
-              </Text>
+              <Text style={styles.headerSubtitle}>{displayName}</Text>
             </View>
-            <View style={[styles.headerAvatar, { backgroundColor: profileSettings.accentColor }]}>
+            <Pressable
+              style={[styles.headerAvatar, { backgroundColor: profileSettings.accentColor }]}
+              onPress={() => setActiveSection('configuracion')}
+            >
               <Text style={styles.headerAvatarText}>{profileSettings.profileInitial.slice(0, 1).toUpperCase()}</Text>
-            </View>
-            <Pressable style={styles.headerIconButton} onPress={handleSignOut}>
-              <Ionicons name="log-out-outline" size={19} color="#dbeafe" />
             </Pressable>
           </View>
 
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.navScroll}
+          <Pressable
+            style={styles.despachoSelector}
+            onPress={() => setDespachoPickerOpen(true)}
           >
-            {navigation.map((item) => {
-              const active = item.id === activeSection;
-              return (
-                <Pressable
-                  key={item.id}
-                  style={[styles.navItem, active && styles.navItemActive]}
-                  onPress={() => setActiveSection(item.id)}
-                >
-                  <Ionicons name={item.icon} size={18} color={active ? '#1d4ed8' : '#475569'} />
-                  <Text style={[styles.navText, active && styles.navTextActive]}>{item.name}</Text>
-                </Pressable>
-              );
-            })}
-          </ScrollView>
+            <View style={styles.despachoSelectorIcon}>
+              <Ionicons name="briefcase-outline" size={17} color="#d4ab4e" />
+            </View>
+            <View style={styles.despachoSelectorCopy}>
+              <Text style={styles.despachoSelectorLabel}>Despacho activo</Text>
+              <Text numberOfLines={1} style={styles.despachoSelectorName}>
+                {selectedMembership ? getDespachoName(selectedMembership) : 'Seleccionar despacho'}
+              </Text>
+            </View>
+            <Ionicons name="chevron-down" size={18} color="#cbd5e1" />
+          </Pressable>
         </SafeAreaView>
       </LinearGradient>
+
+      {networkState.isConnected === false && (
+        <View style={styles.offlineBanner}>
+          <Ionicons name="cloud-offline-outline" size={18} color="#7f1d1d" />
+          <Text style={styles.offlineBannerText}>Sin conexion. Puedes consultar la pantalla, pero los cambios no se guardaran.</Text>
+        </View>
+      )}
 
       {availableUpdate && (
         <View style={styles.updateBanner}>
@@ -1133,18 +1633,38 @@ export default function App() {
         </View>
       )}
 
-      <ScrollView style={styles.content} contentContainerStyle={styles.contentInner}>
-        {activeSection === 'dashboard' && <DashboardScreen onNavigate={setActiveSection} />}
-        {activeSection === 'totalExpedientes' && <TotalExpedientesScreen onNavigate={setActiveSection} />}
-        {activeSection === 'expedientes' && (
-          <ExpedientesScreen selectedMembership={selectedMembership} currentUserId={session.user.id} />
+      <ScrollView
+        key={`${activeSection}-${selectedMembership?.despacho_id ?? 'none'}`}
+        style={styles.content}
+        contentContainerStyle={styles.contentInner}
+        keyboardShouldPersistTaps="handled"
+      >
+        {activeSection === 'dashboard' && (
+          <DashboardScreen
+            selectedMembership={selectedMembership}
+            onNavigate={setActiveSection}
+            onQuickAction={() => setQuickActionsOpen(true)}
+          />
         )}
-        {activeSection === 'archivo' && <ArchivoScreen onNavigate={setActiveSection} />}
+        {activeSection === 'totalExpedientes' && (
+          <TotalExpedientesScreen selectedMembership={selectedMembership} onNavigate={setActiveSection} />
+        )}
+        {activeSection === 'expedientes' && (
+          <ExpedientesScreen
+            selectedMembership={selectedMembership}
+            currentUserId={session.user.id}
+            quickAction={quickAction}
+          />
+        )}
+        {activeSection === 'archivo' && (
+          <ArchivoScreen selectedMembership={selectedMembership} onNavigate={setActiveSection} />
+        )}
         {activeSection === 'movimientos' && (
           <MovimientosScreen
             selectedMembership={selectedMembership}
             currentUserId={session.user.id}
             onCreateCalendarEvent={createCalendarEvent}
+            quickAction={quickAction}
           />
         )}
         {activeSection === 'calendario' && (
@@ -1154,10 +1674,13 @@ export default function App() {
             onCreateCalendarEvent={createCalendarEvent}
             onDeleteCalendarEvent={deleteCalendarEvent}
             onRequestPermission={requestNotificationPermission}
+            onAddToDeviceCalendar={addEventToDeviceCalendar}
           />
         )}
-        {activeSection === 'clientes' && <ClientesScreen />}
-        {activeSection === 'laboral' && <LaboralScreen />}
+        {activeSection === 'clientes' && (
+          <ClientesScreen selectedMembership={selectedMembership} quickAction={quickAction} />
+        )}
+        {activeSection === 'laboral' && <LaboralScreen selectedMembership={selectedMembership} />}
         {activeSection === 'teamChat' && (
           <TeamChatScreen
             currentUserId={session.user.id}
@@ -1166,11 +1689,18 @@ export default function App() {
             loadingMemberships={loadingMemberships}
             membershipError={membershipError}
             onRefreshMemberships={fetchMemberships}
-            onSelectMembership={setSelectedMembership}
+            onSelectMembership={selectMembership}
           />
         )}
-        {activeSection === 'juris' && JURIS_PREMIUM_UNLOCKED && <JurisPremiumScreen onNavigate={setActiveSection} />}
-        {activeSection === 'juris' && !JURIS_PREMIUM_UNLOCKED && <DashboardScreen onNavigate={setActiveSection} />}
+        {activeSection === 'despachos' && (
+          <DespachosScreen
+            memberships={memberships}
+            selectedMembership={selectedMembership}
+            onRefresh={fetchMemberships}
+            onSelect={selectMembership}
+          />
+        )}
+        {activeSection === 'more' && <MoreScreen onNavigate={setActiveSection} />}
         {activeSection === 'configuracion' && (
           <ConfiguracionScreen
             email={displayEmail}
@@ -1186,22 +1716,228 @@ export default function App() {
             updateMessage={updateMessage}
             onCheckForUpdates={() => checkForUpdates(true)}
             onInstallUpdate={() => installAvailableUpdate(availableUpdate)}
+            biometricAvailable={biometricAvailable}
+            biometricEnabled={biometricEnabled}
+            onBiometricChange={setBiometricPreference}
+            subscriptionStatus={appProfile?.subscription_status}
+            trialEndsAt={appProfile?.trial_ends_at}
           />
         )}
       </ScrollView>
+
+      <View style={styles.bottomBar}>
+        {navigation.map((item, index) => {
+          const active =
+            item.id === activeSection ||
+            (item.id === 'more' &&
+              ['movimientos', 'clientes', 'laboral', 'archivo', 'totalExpedientes', 'despachos', 'configuracion'].includes(activeSection));
+          const middle = index === 2;
+          return (
+            <View key={item.id} style={styles.bottomItemSlot}>
+              {middle && (
+                <Pressable
+                  accessibilityLabel="Abrir acciones rapidas"
+                  style={styles.quickActionButton}
+                  onPress={() => setQuickActionsOpen(true)}
+                >
+                  <Ionicons name="add" size={30} color="#0c1424" />
+                </Pressable>
+              )}
+              <Pressable
+                style={[styles.bottomItem, middle && styles.bottomItemMiddle, active && styles.bottomItemActive]}
+                onPress={() => setActiveSection(item.id)}
+              >
+                <Ionicons name={item.icon} size={21} color={active ? '#1d4ed8' : '#64748b'} />
+                <Text style={[styles.bottomItemText, active && styles.bottomItemTextActive]}>{item.name}</Text>
+              </Pressable>
+            </View>
+          );
+        })}
+      </View>
+
+      <QuickActionsModal
+        visible={quickActionsOpen}
+        onClose={() => setQuickActionsOpen(false)}
+        onSelect={openQuickAction}
+      />
+
+      <DespachoPickerModal
+        visible={despachoPickerOpen}
+        memberships={memberships}
+        selectedMembership={selectedMembership}
+        loading={loadingMemberships}
+        error={membershipError}
+        onClose={() => setDespachoPickerOpen(false)}
+        onSelect={(membership) => {
+          selectMembership(membership);
+          setDespachoPickerOpen(false);
+          setActiveSection('dashboard');
+        }}
+        onRefresh={fetchMemberships}
+        onManage={() => {
+          setDespachoPickerOpen(false);
+          setActiveSection('despachos');
+        }}
+      />
     </View>
   );
 }
 
-function DashboardScreen({ onNavigate }: { onNavigate: (section: Section) => void }) {
+function DashboardScreen({
+  selectedMembership,
+  onNavigate,
+  onQuickAction,
+}: {
+  selectedMembership: DespachoMember | null;
+  onNavigate: (section: Section) => void;
+  onQuickAction: () => void;
+}) {
+  const despachoId = selectedMembership?.despacho_id ?? '';
+  const [loading, setLoading] = useState(false);
+  const [counts, setCounts] = useState({
+    total: 0,
+    activos: 0,
+    clientes: 0,
+    movimientos: 0,
+    laboral: 0,
+    archivo: 0,
+  });
+  const [reportItems, setReportItems] = useState<ReportItem[]>([]);
+  const [upcomingEvents, setUpcomingEvents] = useState<CalendarEvent[]>([]);
+
+  const fetchDashboard = useCallback(async () => {
+    if (!despachoId) {
+      setCounts({ total: 0, activos: 0, clientes: 0, movimientos: 0, laboral: 0, archivo: 0 });
+      setReportItems([]);
+      setUpcomingEvents([]);
+      return;
+    }
+
+    setLoading(true);
+    const today = toDatabaseDateFromDate(new Date());
+    const [
+      totalResponse,
+      activeResponse,
+      clientsResponse,
+      movementsResponse,
+      laborResponse,
+      archiveResponse,
+      recentExpedientes,
+      recentMovimientos,
+      recentClientes,
+      upcomingResponse,
+    ] = await Promise.all([
+      supabase.from('expedientes').select('*', { count: 'exact', head: true }).eq('despacho_id', despachoId),
+      supabase
+        .from('expedientes')
+        .select('*', { count: 'exact', head: true })
+        .eq('despacho_id', despachoId)
+        .neq('estatus', 'Archivado'),
+      supabase.from('clientes').select('*', { count: 'exact', head: true }).eq('despacho_id', despachoId),
+      supabase.from('movimientos').select('*', { count: 'exact', head: true }).eq('despacho_id', despachoId),
+      supabase.from('laboral_asuntos').select('*', { count: 'exact', head: true }).eq('despacho_id', despachoId),
+      supabase
+        .from('expedientes')
+        .select('*', { count: 'exact', head: true })
+        .eq('despacho_id', despachoId)
+        .eq('estatus', 'Archivado'),
+      supabase
+        .from('expedientes')
+        .select('numero_expediente,partes,created_at')
+        .eq('despacho_id', despachoId)
+        .order('created_at', { ascending: false })
+        .limit(2),
+      supabase
+        .from('movimientos')
+        .select('tipo,descripcion,created_at')
+        .eq('despacho_id', despachoId)
+        .order('created_at', { ascending: false })
+        .limit(2),
+      supabase
+        .from('clientes')
+        .select('nombre,created_at')
+        .eq('despacho_id', despachoId)
+        .order('created_at', { ascending: false })
+        .limit(2),
+      supabase
+        .from('calendario_eventos')
+        .select('id,titulo,descripcion,event_date,event_time,expediente_id,movimiento_id,created_at')
+        .eq('despacho_id', despachoId)
+        .gte('event_date', today)
+        .order('event_date', { ascending: true })
+        .order('event_time', { ascending: true })
+        .limit(4),
+    ]);
+
+    setCounts({
+      total: totalResponse.count ?? 0,
+      activos: activeResponse.count ?? 0,
+      clientes: clientsResponse.count ?? 0,
+      movimientos: movementsResponse.count ?? 0,
+      laboral: laborResponse.count ?? 0,
+      archivo: archiveResponse.count ?? 0,
+    });
+
+    const reports: ReportItem[] = [
+      ...(recentMovimientos.data ?? []).map((item) => ({
+        type: 'movimiento' as const,
+        label: item.tipo || 'Movimiento',
+        detail: item.descripcion || 'Movimiento registrado',
+      })),
+      ...(recentExpedientes.data ?? []).map((item) => ({
+        type: 'expediente' as const,
+        label: `Expediente ${item.numero_expediente}`,
+        detail: item.partes,
+      })),
+      ...(recentClientes.data ?? []).map((item) => ({
+        type: 'cliente' as const,
+        label: 'Cliente agregado',
+        detail: item.nombre,
+      })),
+    ].slice(0, 5);
+
+    setReportItems(reports);
+    setUpcomingEvents((upcomingResponse.data ?? []).map((event) => fromDatabaseCalendarEvent(event)));
+    setLoading(false);
+  }, [despachoId]);
+
+  useEffect(() => {
+    void fetchDashboard();
+  }, [fetchDashboard]);
+
+  const statCards: StatCard[] = [
+    { title: 'Total Expedientes', value: String(counts.total), icon: 'document-text-outline', tone: 'blue', target: 'totalExpedientes' },
+    { title: 'Expedientes Activos', value: String(counts.activos), icon: 'trending-up-outline', tone: 'green', target: 'expedientes' },
+    { title: 'Clientes', value: String(counts.clientes), icon: 'people-outline', tone: 'orange', target: 'clientes' },
+    { title: 'Movimientos', value: String(counts.movimientos), icon: 'document-attach-outline', tone: 'cyan', target: 'movimientos' },
+    { title: 'Asuntos Laborales', value: String(counts.laboral), icon: 'business-outline', tone: 'slate', target: 'laboral' },
+    { title: 'Archivo', value: String(counts.archivo), icon: 'archive-outline', tone: 'indigo', target: 'archivo' },
+  ];
+
   return (
     <View style={styles.stack}>
       <View style={styles.titleRow}>
         <View style={styles.titleCopy}>
-          <Text style={styles.screenTitle}>Panel de Control</Text>
-          <Text style={styles.screenSubtitle}>Resumen general de gestion juridica</Text>
+          <Text style={styles.screenTitle}>Inicio</Text>
+          <Text style={styles.screenSubtitle}>
+            {selectedMembership ? getDespachoName(selectedMembership) : 'Selecciona un despacho para comenzar'}
+          </Text>
         </View>
+        <Pressable style={styles.iconButton} onPress={() => void fetchDashboard()}>
+          {loading ? <ActivityIndicator size="small" color="#1d4ed8" /> : <Ionicons name="refresh-outline" size={19} color="#1d4ed8" />}
+        </Pressable>
       </View>
+
+      <Pressable style={styles.mobileQuickActionHero} onPress={onQuickAction}>
+        <View style={styles.mobileQuickActionIcon}>
+          <Ionicons name="add" size={27} color="#0c1424" />
+        </View>
+        <View style={styles.mobileQuickActionCopy}>
+          <Text style={styles.mobileQuickActionTitle}>Nueva accion</Text>
+          <Text style={styles.mobileQuickActionText}>Expediente, movimiento, audiencia, cliente o documento.</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={20} color="#d4ab4e" />
+      </Pressable>
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.quickLinksRow}>
         {quickLinks.map((link) => (
@@ -1228,6 +1964,35 @@ function DashboardScreen({ onNavigate }: { onNavigate: (section: Section) => voi
             </View>
           </Pressable>
         ))}
+      </View>
+
+      <View style={styles.agendaPreview}>
+        <View style={styles.agendaPreviewHeader}>
+          <View>
+            <Text style={styles.cardTitle}>Proximas audiencias</Text>
+            <Text style={styles.cardText}>Prioridades para hoy y los siguientes dias.</Text>
+          </View>
+          <Pressable onPress={() => onNavigate('calendario')}>
+            <Text style={styles.linkText}>Ver agenda</Text>
+          </Pressable>
+        </View>
+        {upcomingEvents.length === 0 ? (
+          <Text style={styles.agendaEmptyText}>No hay audiencias futuras registradas.</Text>
+        ) : (
+          upcomingEvents.map((event) => (
+            <Pressable key={event.id} style={styles.agendaPreviewRow} onPress={() => onNavigate('calendario')}>
+              <View style={styles.agendaPreviewDate}>
+                <Text style={styles.agendaPreviewDay}>{event.dateInput.slice(0, 2)}</Text>
+                <Text style={styles.agendaPreviewMonth}>{event.dateInput.slice(3, 5)}</Text>
+              </View>
+              <View style={styles.agendaPreviewCopy}>
+                <Text style={styles.cardTitle}>{event.title}</Text>
+                <Text style={styles.cardText}>{getAudienceRecommendation(event.eventAt)}</Text>
+              </View>
+              <Ionicons name="notifications-outline" size={19} color="#1d4ed8" />
+            </Pressable>
+          ))
+        )}
       </View>
 
       <Pressable style={styles.teamCard} onPress={() => onNavigate('teamChat')}>
@@ -1269,21 +2034,68 @@ function DashboardScreen({ onNavigate }: { onNavigate: (section: Section) => voi
   );
 }
 
-function TotalExpedientesScreen({ onNavigate }: { onNavigate: (section: Section) => void }) {
+function TotalExpedientesScreen({
+  selectedMembership,
+  onNavigate,
+}: {
+  selectedMembership: DespachoMember | null;
+  onNavigate: (section: Section) => void;
+}) {
+  const [expedientes, setExpedientes] = useState<MobileExpediente[]>([]);
+  const [search, setSearch] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const despachoId = selectedMembership?.despacho_id;
+    if (!despachoId) {
+      setExpedientes([]);
+      return;
+    }
+
+    setLoading(true);
+    void supabase
+      .from('expedientes')
+      .select('*')
+      .eq('despacho_id', despachoId)
+      .order('updated_at', { ascending: false })
+      .then(({ data }) => {
+        setExpedientes((data ?? []) as MobileExpediente[]);
+        setLoading(false);
+      });
+  }, [selectedMembership?.despacho_id]);
+
+  const normalizedSearch = normalizeForModeration(search);
+  const visible = expedientes.filter((item) =>
+    normalizeForModeration(`${item.numero_expediente} ${item.partes} ${item.juzgado}`).includes(normalizedSearch),
+  );
+
   return (
     <View style={styles.stack}>
       <ScreenHeader
         title="Total Expedientes"
         subtitle="Directorio completo ordenado por fecha de ingreso y ultima modificacion."
       />
-      <CompactList
-        items={[
-          'Fecha de ingreso mas reciente',
-          'Ultima modificacion',
-          'Materia y juzgado',
-          'Estatus activo o archivado',
-        ]}
+      <TextInput
+        onChangeText={setSearch}
+        placeholder="Buscar expediente, partes o juzgado"
+        placeholderTextColor="#94a3b8"
+        style={styles.input}
+        value={search}
       />
+      <Text style={styles.sectionMiniTitle}>{loading ? 'Cargando...' : `${visible.length} expediente(s)`}</Text>
+      {visible.map((expediente) => (
+        <View key={expediente.id} style={styles.recordCard}>
+          <View style={styles.recordTitleRow}>
+            <Text style={styles.cardTitle}>{expediente.numero_expediente}</Text>
+            <Text style={styles.recordPill}>{expediente.estatus}</Text>
+          </View>
+          <Text style={styles.cardText}>{expediente.partes}</Text>
+          <Text style={styles.cardText}>{getShortCourtName(expediente.juzgado)}</Text>
+          <Text style={styles.recordTimestamp}>
+            Actualizado {formatMessageTime(expediente.updated_at || expediente.created_at)}
+          </Text>
+        </View>
+      ))}
       <Pressable style={styles.primaryAction} onPress={() => onNavigate('expedientes')}>
         <Text style={styles.primaryActionText}>Abrir Expedientes</Text>
         <Ionicons name="arrow-forward" size={18} color="#ffffff" />
@@ -1295,9 +2107,11 @@ function TotalExpedientesScreen({ onNavigate }: { onNavigate: (section: Section)
 function ExpedientesScreen({
   selectedMembership,
   currentUserId,
+  quickAction,
 }: {
   selectedMembership: DespachoMember | null;
   currentUserId: string;
+  quickAction: { type: QuickAction; nonce: number } | null;
 }) {
   const despachoId = selectedMembership?.despacho_id ?? '';
   const canEdit = canEditMembership(selectedMembership);
@@ -1310,6 +2124,10 @@ function ExpedientesScreen({
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
+  const [expandedExpedienteId, setExpandedExpedienteId] = useState('');
+  const [detailMovimientos, setDetailMovimientos] = useState<MobileMovimiento[]>([]);
+  const [detailAttachments, setDetailAttachments] = useState<MobileDocumentAttachment[]>([]);
+  const [loadingDetails, setLoadingDetails] = useState(false);
 
   const fetchExpedientes = useCallback(async () => {
     if (!despachoId) {
@@ -1338,6 +2156,27 @@ function ExpedientesScreen({
     fetchExpedientes();
   }, [fetchExpedientes]);
 
+  useEffect(() => {
+    if (!quickAction || !['expediente', 'scan'].includes(quickAction.type)) return;
+    const defaultMateria: MateriaJuzgado = 'Mercantil';
+    const defaultJuzgado = getMateriaJuzgados(defaultMateria)[0];
+    setSelectedMateria(defaultMateria);
+    setSelectedJuzgado(defaultJuzgado);
+    setFormData(createEmptyExpedienteForm(defaultMateria, defaultJuzgado.nombre));
+
+    if (quickAction.type === 'scan') {
+      void (async () => {
+        const captured = await pickCameraImage();
+        if (captured.error) {
+          setErrorMessage(captured.error);
+          return;
+        }
+        setSelectedFile(captured.file);
+        if (captured.file) setFeedback('Documento capturado. Completa los datos del expediente para guardarlo.');
+      })();
+    }
+  }, [quickAction?.nonce]);
+
   const selectMateria = (materia: MateriaJuzgado) => {
     setSelectedMateria(materia);
     setSelectedJuzgado(null);
@@ -1363,6 +2202,89 @@ function ExpedientesScreen({
       return;
     }
     setSelectedFile(picked.file);
+  };
+
+  const handleCameraFile = async () => {
+    const captured = await pickCameraImage();
+    if (captured.error) {
+      setErrorMessage(captured.error);
+      return;
+    }
+    setSelectedFile(captured.file);
+  };
+
+  const toggleExpedienteDetails = async (expedienteId: string) => {
+    if (expandedExpedienteId === expedienteId) {
+      setExpandedExpedienteId('');
+      return;
+    }
+
+    setExpandedExpedienteId(expedienteId);
+    setLoadingDetails(true);
+    const [movimientosResponse, attachmentsResponse] = await Promise.all([
+      supabase
+        .from('movimientos')
+        .select('*')
+        .eq('expediente_id', expedienteId)
+        .order('fecha', { ascending: false }),
+      supabase
+        .from('document_adjuntos')
+        .select('*')
+        .eq('expediente_id', expedienteId)
+        .order('created_at', { ascending: false }),
+    ]);
+
+    setDetailMovimientos((movimientosResponse.data ?? []) as MobileMovimiento[]);
+    setDetailAttachments((attachmentsResponse.data ?? []) as MobileDocumentAttachment[]);
+    setLoadingDetails(false);
+  };
+
+  const openDocumentAttachment = async (attachment: MobileDocumentAttachment, share = false) => {
+    const { data, error } = await supabase.storage
+      .from(DOCUMENT_FILES_BUCKET)
+      .createSignedUrl(attachment.storage_path, 60 * 60);
+    if (error || !data?.signedUrl) {
+      Alert.alert('No se pudo abrir', error?.message ?? 'No se genero el enlace del documento.');
+      return;
+    }
+
+    if (share) {
+      await shareRemoteFile(data.signedUrl, attachment.file_name, attachment.file_type);
+      return;
+    }
+    await Linking.openURL(data.signedUrl);
+  };
+
+  const archiveExpediente = async (expediente: MobileExpediente) => {
+    if (!canEdit) {
+      Alert.alert('Solo lectura', 'Pide permiso de edicion para cambiar el estatus.');
+      return;
+    }
+
+    const nextStatus = expediente.estatus === 'Archivado' ? 'Activo' : 'Archivado';
+    Alert.alert(
+      nextStatus === 'Archivado' ? 'Archivar expediente' : 'Recuperar expediente',
+      `${expediente.numero_expediente} cambiara a ${nextStatus}.`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Confirmar',
+          onPress: () => {
+            void supabase
+              .from('expedientes')
+              .update({ estatus: nextStatus, updated_at: new Date().toISOString() })
+              .eq('id', expediente.id)
+              .then(({ error: updateError }) => {
+                if (updateError) {
+                  Alert.alert('No se pudo actualizar', updateError.message);
+                  return;
+                }
+                void fetchExpedientes();
+              });
+          },
+        },
+      ],
+    );
   };
 
   const handleCreateExpediente = async () => {
@@ -1565,6 +2487,9 @@ function ExpedientesScreen({
               <Ionicons name="attach-outline" size={17} color="#1d4ed8" />
               <Text style={styles.secondaryActionCompactText}>Adjuntar</Text>
             </Pressable>
+            <Pressable style={styles.secondaryIconButton} onPress={handleCameraFile}>
+              <Ionicons name="camera-outline" size={20} color="#1d4ed8" />
+            </Pressable>
             <Pressable
               style={[styles.primaryAction, styles.actionRowPrimary, saving && styles.sendButtonDisabled]}
               onPress={handleCreateExpediente}
@@ -1588,28 +2513,155 @@ function ExpedientesScreen({
             <Text style={styles.emptyStateText}>Selecciona un juzgado y guarda el primer expediente.</Text>
           </View>
         ) : (
-          visibleExpedientes.map((expediente) => (
-            <View key={expediente.id} style={styles.recordCard}>
-              <Text style={styles.cardTitle}>{expediente.numero_expediente}</Text>
-              <Text style={styles.cardText}>{expediente.partes}</Text>
-              <View style={styles.recordMetaRow}>
-                <Text style={styles.recordPill}>{expediente.estatus}</Text>
-                <Text style={styles.recordPill}>{expediente.tipo_juicio ?? getMateriaForExpediente(expediente)}</Text>
+          visibleExpedientes.map((expediente) => {
+            const expanded = expandedExpedienteId === expediente.id;
+            return (
+              <View key={expediente.id} style={styles.recordCard}>
+                <Pressable style={styles.recordPressable} onPress={() => void toggleExpedienteDetails(expediente.id)}>
+                  <View style={styles.recordTitleRow}>
+                    <Text style={styles.cardTitle}>{expediente.numero_expediente}</Text>
+                    <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={19} color="#1d4ed8" />
+                  </View>
+                  <Text style={styles.cardText}>{expediente.partes}</Text>
+                  <View style={styles.recordMetaRow}>
+                    <Text style={styles.recordPill}>{expediente.estatus}</Text>
+                    <Text style={styles.recordPill}>{expediente.tipo_juicio ?? getMateriaForExpediente(expediente)}</Text>
+                  </View>
+                  <Text style={styles.cardText}>{getShortCourtName(expediente.juzgado)}</Text>
+                </Pressable>
+
+                {expanded && (
+                  <View style={styles.recordDetails}>
+                    {loadingDetails ? (
+                      <ActivityIndicator color="#1d4ed8" />
+                    ) : (
+                      <>
+                        <Text style={styles.detailSectionTitle}>Movimientos</Text>
+                        {detailMovimientos.length === 0 ? (
+                          <Text style={styles.cardText}>Todavia no tiene movimientos.</Text>
+                        ) : (
+                          detailMovimientos.slice(0, 5).map((movimiento) => (
+                            <View key={movimiento.id} style={styles.detailRow}>
+                              <Text style={styles.detailRowTitle}>{movimiento.tipo}</Text>
+                              <Text style={styles.detailRowText}>{movimiento.descripcion}</Text>
+                              <Text style={styles.detailRowMeta}>{toMexicanDateFromDatabase(movimiento.fecha)}</Text>
+                            </View>
+                          ))
+                        )}
+
+                        <Text style={styles.detailSectionTitle}>Documentos</Text>
+                        {detailAttachments.length === 0 ? (
+                          <Text style={styles.cardText}>Sin archivos adjuntos.</Text>
+                        ) : (
+                          detailAttachments.map((attachment) => (
+                            <View key={attachment.id} style={styles.attachmentRow}>
+                              <Ionicons name="document-attach-outline" size={20} color="#1d4ed8" />
+                              <View style={styles.attachmentCopy}>
+                                <Text style={styles.attachmentName}>{attachment.file_name}</Text>
+                                <Text style={styles.attachmentSize}>{formatFileSize(attachment.file_size)}</Text>
+                              </View>
+                              <Pressable style={styles.attachmentShareButton} onPress={() => void openDocumentAttachment(attachment)}>
+                                <Ionicons name="open-outline" size={17} color="#1d4ed8" />
+                              </Pressable>
+                              <Pressable
+                                style={styles.attachmentShareButton}
+                                onPress={() => void openDocumentAttachment(attachment, true)}
+                              >
+                                <Ionicons name="share-social-outline" size={17} color="#1d4ed8" />
+                              </Pressable>
+                            </View>
+                          ))
+                        )}
+
+                        <Pressable style={styles.secondaryActionCompact} onPress={() => void archiveExpediente(expediente)}>
+                          <Ionicons
+                            name={expediente.estatus === 'Archivado' ? 'arrow-undo-outline' : 'archive-outline'}
+                            size={18}
+                            color="#1d4ed8"
+                          />
+                          <Text style={styles.secondaryActionCompactText}>
+                            {expediente.estatus === 'Archivado' ? 'Recuperar expediente' : 'Enviar al archivo'}
+                          </Text>
+                        </Pressable>
+                      </>
+                    )}
+                  </View>
+                )}
               </View>
-              <Text style={styles.cardText}>{getShortCourtName(expediente.juzgado)}</Text>
-            </View>
-          ))
+            );
+          })
         )}
       </View>
     </View>
   );
 }
 
-function ArchivoScreen({ onNavigate }: { onNavigate: (section: Section) => void }) {
+function ArchivoScreen({
+  selectedMembership,
+  onNavigate,
+}: {
+  selectedMembership: DespachoMember | null;
+  onNavigate: (section: Section) => void;
+}) {
+  const [expedientes, setExpedientes] = useState<MobileExpediente[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const fetchArchived = useCallback(async () => {
+    const despachoId = selectedMembership?.despacho_id;
+    if (!despachoId) {
+      setExpedientes([]);
+      return;
+    }
+
+    setLoading(true);
+    const { data } = await supabase
+      .from('expedientes')
+      .select('*')
+      .eq('despacho_id', despachoId)
+      .eq('estatus', 'Archivado')
+      .order('updated_at', { ascending: false });
+    setExpedientes((data ?? []) as MobileExpediente[]);
+    setLoading(false);
+  }, [selectedMembership?.despacho_id]);
+
+  useEffect(() => {
+    void fetchArchived();
+  }, [fetchArchived]);
+
+  const restore = async (expediente: MobileExpediente) => {
+    const { error } = await supabase
+      .from('expedientes')
+      .update({ estatus: 'Activo', updated_at: new Date().toISOString() })
+      .eq('id', expediente.id);
+    if (error) {
+      Alert.alert('No se pudo recuperar', error.message);
+      return;
+    }
+    void fetchArchived();
+  };
+
   return (
     <View style={styles.stack}>
       <ScreenHeader title="Archivo" subtitle="Expedientes archivados separados de los activos." />
-      <CompactList items={['Archivado por fecha', 'Busqueda por partes', 'Recuperacion desde expedientes']} />
+      <Text style={styles.sectionMiniTitle}>{loading ? 'Cargando...' : `${expedientes.length} expediente(s) archivado(s)`}</Text>
+      {expedientes.length === 0 ? (
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyStateTitle}>Archivo vacio</Text>
+          <Text style={styles.emptyStateText}>Los expedientes con estatus Archivado apareceran aqui.</Text>
+        </View>
+      ) : (
+        expedientes.map((expediente) => (
+          <View key={expediente.id} style={styles.recordCard}>
+            <Text style={styles.cardTitle}>{expediente.numero_expediente}</Text>
+            <Text style={styles.cardText}>{expediente.partes}</Text>
+            <Text style={styles.cardText}>{getShortCourtName(expediente.juzgado)}</Text>
+            <Pressable style={styles.secondaryActionCompact} onPress={() => void restore(expediente)}>
+              <Ionicons name="arrow-undo-outline" size={18} color="#1d4ed8" />
+              <Text style={styles.secondaryActionCompactText}>Recuperar</Text>
+            </Pressable>
+          </View>
+        ))
+      )}
       <Pressable style={styles.secondaryAction} onPress={() => onNavigate('expedientes')}>
         <Text style={styles.secondaryActionText}>Volver a Expedientes</Text>
       </Pressable>
@@ -1621,10 +2673,22 @@ function MovimientosScreen({
   selectedMembership,
   currentUserId,
   onCreateCalendarEvent,
+  quickAction,
 }: {
   selectedMembership: DespachoMember | null;
   currentUserId: string;
-  onCreateCalendarEvent: (title: string, dateInput: string, timeInput: string) => Promise<{ ok: boolean; message: string }>;
+  onCreateCalendarEvent: (
+    title: string,
+    dateInput: string,
+    timeInput: string,
+    options?: {
+      description?: string;
+      expedienteId?: string | null;
+      movimientoId?: string | null;
+      tipo?: 'audiencia' | 'vencimiento' | 'recordatorio' | 'otro';
+    },
+  ) => Promise<{ ok: boolean; message: string }>;
+  quickAction: { type: QuickAction; nonce: number } | null;
 }) {
   const despachoId = selectedMembership?.despacho_id ?? '';
   const canEdit = canEditMembership(selectedMembership);
@@ -1679,6 +2743,14 @@ function MovimientosScreen({
     fetchData();
   }, [fetchData]);
 
+  useEffect(() => {
+    if (!quickAction || !['movimiento', 'audiencia'].includes(quickAction.type)) return;
+    setTipo(quickAction.type === 'audiencia' ? 'Audiencia' : 'Otros');
+    setFecha(toDateInputValue());
+    setHora('09:00');
+    setFeedback(quickAction.type === 'audiencia' ? 'Completa los datos para agendar la audiencia.' : '');
+  }, [quickAction?.nonce]);
+
   const handlePickFile = async () => {
     const picked = await pickSupportedDocumentFile();
     if (picked.error) {
@@ -1686,6 +2758,15 @@ function MovimientosScreen({
       return;
     }
     setSelectedFile(picked.file);
+  };
+
+  const handleCameraFile = async () => {
+    const captured = await pickCameraImage();
+    if (captured.error) {
+      setErrorMessage(captured.error);
+      return;
+    }
+    setSelectedFile(captured.file);
   };
 
   const handleCreateMovimiento = async () => {
@@ -1737,7 +2818,17 @@ function MovimientosScreen({
     let nextMessage = 'Movimiento guardado.';
 
     if (isAudiencia(tipo)) {
-      const calendarResult = await onCreateCalendarEvent(descripcion.trim() || 'Audiencia', fecha, hora);
+      const calendarResult = await onCreateCalendarEvent(
+        `Audiencia - ${selectedExpediente?.numero_expediente ?? 'Expediente'}`,
+        fecha,
+        hora,
+        {
+          description: descripcion.trim(),
+          expedienteId: selectedExpedienteId,
+          movimientoId: data.id as string,
+          tipo: 'audiencia',
+        },
+      );
       nextMessage = calendarResult.ok
         ? 'Movimiento guardado y audiencia agregada al calendario.'
         : `Movimiento guardado. ${calendarResult.message}`;
@@ -1836,28 +2927,23 @@ function MovimientosScreen({
           value={descripcion}
         />
 
-        <Text style={styles.inputLabel}>{isAudiencia(tipo) ? 'Fecha de audiencia' : 'Fecha'}</Text>
-        <TextInput
-          keyboardType="numeric"
-          onChangeText={setFecha}
-          placeholder="00/00/0000"
-          placeholderTextColor="#94a3b8"
-          style={styles.input}
-          value={fecha}
+        <NativeDateTimeField
+          dateLabel={isAudiencia(tipo) ? 'Fecha de audiencia' : 'Fecha'}
+          dateInput={fecha}
+          timeInput={hora}
+          onDateChange={setFecha}
+          onTimeChange={setHora}
+          showTime={isAudiencia(tipo)}
+          futureOnly={isAudiencia(tipo)}
         />
 
         {isAudiencia(tipo) && (
-          <>
-            <Text style={styles.inputLabel}>Hora</Text>
-            <TextInput
-              keyboardType="numeric"
-              onChangeText={setHora}
-              placeholder="09:00"
-              placeholderTextColor="#94a3b8"
-              style={styles.input}
-              value={hora}
-            />
-          </>
+          <View style={styles.audienceTip}>
+            <Ionicons name="information-circle-outline" size={20} color="#1d4ed8" />
+            <Text style={styles.audienceTipText}>
+              La audiencia se agregara a la agenda compartida y se programaran avisos un dia antes y el mismo dia.
+            </Text>
+          </View>
         )}
 
         {selectedFile && (
@@ -1877,6 +2963,9 @@ function MovimientosScreen({
           <Pressable style={styles.secondaryActionCompact} onPress={handlePickFile}>
             <Ionicons name="attach-outline" size={17} color="#1d4ed8" />
             <Text style={styles.secondaryActionCompactText}>Adjuntar</Text>
+          </Pressable>
+          <Pressable style={styles.secondaryIconButton} onPress={handleCameraFile}>
+            <Ionicons name="camera-outline" size={20} color="#1d4ed8" />
           </Pressable>
           <Pressable
             style={[styles.primaryAction, styles.actionRowPrimary, saving && styles.sendButtonDisabled]}
@@ -1925,12 +3014,19 @@ function CalendarioScreen({
   onCreateCalendarEvent,
   onDeleteCalendarEvent,
   onRequestPermission,
+  onAddToDeviceCalendar,
 }: {
   events: CalendarEvent[];
   notificationStatus: NotificationPermissionStatus;
-  onCreateCalendarEvent: (title: string, dateInput: string, timeInput: string) => Promise<{ ok: boolean; message: string }>;
+  onCreateCalendarEvent: (
+    title: string,
+    dateInput: string,
+    timeInput: string,
+    options?: { description?: string; tipo?: 'audiencia' | 'vencimiento' | 'recordatorio' | 'otro' },
+  ) => Promise<{ ok: boolean; message: string }>;
   onDeleteCalendarEvent: (eventId: string) => Promise<void>;
   onRequestPermission: () => Promise<boolean>;
+  onAddToDeviceCalendar: (event: CalendarEvent) => Promise<void>;
 }) {
   const [eventTitle, setEventTitle] = useState('Audiencia');
   const [eventDate, setEventDate] = useState('');
@@ -1938,7 +3034,10 @@ function CalendarioScreen({
   const [feedback, setFeedback] = useState('');
 
   const handleCreateEvent = async () => {
-    const result = await onCreateCalendarEvent(eventTitle, eventDate, eventTime);
+    const result = await onCreateCalendarEvent(eventTitle, eventDate, eventTime, {
+      description: 'Evento creado desde la agenda movil',
+      tipo: 'audiencia',
+    });
     setFeedback(result.message);
     if (result.ok) {
       setEventTitle('Audiencia');
@@ -1978,23 +3077,14 @@ function CalendarioScreen({
           style={styles.input}
           value={eventTitle}
         />
-        <Text style={styles.inputLabel}>Fecha</Text>
-        <TextInput
-          keyboardType="numeric"
-          onChangeText={setEventDate}
-          placeholder="00/00/0000"
-          placeholderTextColor="#94a3b8"
-          style={styles.input}
-          value={eventDate}
-        />
-        <Text style={styles.inputLabel}>Hora</Text>
-        <TextInput
-          keyboardType="numeric"
-          onChangeText={setEventTime}
-          placeholder="09:00"
-          placeholderTextColor="#94a3b8"
-          style={styles.input}
-          value={eventTime}
+        <NativeDateTimeField
+          dateLabel="Fecha"
+          dateInput={eventDate}
+          timeInput={eventTime}
+          onDateChange={setEventDate}
+          onTimeChange={setEventTime}
+          showTime
+          futureOnly
         />
         <Pressable style={styles.primaryAction} onPress={handleCreateEvent}>
           <Text style={styles.primaryActionText}>Agregar audiencia</Text>
@@ -2018,13 +3108,19 @@ function CalendarioScreen({
             <View style={styles.calendarCopy}>
               <Text style={styles.cardTitle}>{event.title}</Text>
               <Text style={styles.cardText}>{formatCalendarDate(event.eventAt)}</Text>
+              <Text style={styles.audienceRecommendation}>{getAudienceRecommendation(event.eventAt)}</Text>
               <Text style={styles.cardText}>
                 {event.notificationIds.length > 0 ? 'Avisos programados' : 'Guardado sin avisos del sistema'}
               </Text>
             </View>
-            <Pressable style={styles.iconDangerButton} onPress={() => onDeleteCalendarEvent(event.id)}>
-              <Ionicons name="trash-outline" size={18} color="#be123c" />
-            </Pressable>
+            <View style={styles.calendarActions}>
+              <Pressable style={styles.iconButton} onPress={() => void onAddToDeviceCalendar(event)}>
+                <Ionicons name="phone-portrait-outline" size={18} color="#1d4ed8" />
+              </Pressable>
+              <Pressable style={styles.iconDangerButton} onPress={() => onDeleteCalendarEvent(event.id)}>
+                <Ionicons name="trash-outline" size={18} color="#be123c" />
+              </Pressable>
+            </View>
           </View>
         ))
       )}
@@ -2032,22 +3128,416 @@ function CalendarioScreen({
   );
 }
 
-function ClientesScreen() {
+function ClientesScreen({
+  selectedMembership,
+  quickAction,
+}: {
+  selectedMembership: DespachoMember | null;
+  quickAction: { type: QuickAction; nonce: number } | null;
+}) {
+  const despachoId = selectedMembership?.despacho_id ?? '';
+  const canEdit = canEditMembership(selectedMembership);
+  const [clientes, setClientes] = useState<MobileCliente[]>([]);
+  const [nombre, setNombre] = useState('');
+  const [montoPactado, setMontoPactado] = useState('');
+  const [totalAdeudo, setTotalAdeudo] = useState('');
+  const [formOpen, setFormOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
+
+  const fetchClientes = useCallback(async () => {
+    if (!despachoId) {
+      setClientes([]);
+      return;
+    }
+    setLoading(true);
+    const { data, error } = await supabase
+      .from('clientes')
+      .select('*')
+      .eq('despacho_id', despachoId)
+      .order('created_at', { ascending: false });
+    if (error) setErrorMessage(error.message);
+    setClientes((data ?? []) as MobileCliente[]);
+    setLoading(false);
+  }, [despachoId]);
+
+  useEffect(() => {
+    void fetchClientes();
+  }, [fetchClientes]);
+
+  useEffect(() => {
+    if (quickAction?.type === 'cliente') setFormOpen(true);
+  }, [quickAction?.nonce]);
+
+  const createCliente = async () => {
+    if (!despachoId || !canEdit) {
+      setErrorMessage(canEdit ? 'Selecciona un despacho.' : 'Tu acceso es de solo lectura.');
+      return;
+    }
+    if (!nombre.trim()) {
+      setErrorMessage('Escribe el nombre del cliente.');
+      return;
+    }
+
+    setSaving(true);
+    setErrorMessage('');
+    const { error } = await supabase.from('clientes').insert([
+      {
+        despacho_id: despachoId,
+        nombre: nombre.trim(),
+        monto_pactado: Number(montoPactado.replace(',', '.')) || 0,
+        total_adeudo: Number(totalAdeudo.replace(',', '.')) || 0,
+      },
+    ]);
+
+    if (error) {
+      setErrorMessage(error.message);
+      setSaving(false);
+      return;
+    }
+
+    setNombre('');
+    setMontoPactado('');
+    setTotalAdeudo('');
+    setFormOpen(false);
+    setSaving(false);
+    void fetchClientes();
+  };
+
+  const deleteCliente = (cliente: MobileCliente) => {
+    if (!canEdit) return;
+    Alert.alert('Eliminar cliente', `Se eliminara a ${cliente.nombre}.`, [
+      { text: 'Cancelar', style: 'cancel' },
+      {
+        text: 'Eliminar',
+        style: 'destructive',
+        onPress: () => {
+          void supabase
+            .from('clientes')
+            .delete()
+            .eq('id', cliente.id)
+            .then(({ error }) => {
+              if (error) Alert.alert('No se pudo eliminar', error.message);
+              else void fetchClientes();
+            });
+        },
+      },
+    ]);
+  };
+
+  const visibleClientes = clientes.filter((cliente) =>
+    normalizeForModeration(cliente.nombre).includes(normalizeForModeration(search)),
+  );
+
   return (
     <View style={styles.stack}>
-      <ScreenHeader title="Clientes" subtitle="Directorio de clientes y datos de contacto." />
-      <CompactList items={['Nombre completo', 'Telefono y correo', 'Expedientes relacionados', 'Alerta verde por cliente nuevo']} />
+      <View style={styles.titleRow}>
+        <View style={styles.titleCopy}>
+          <Text style={styles.screenTitle}>Clientes</Text>
+          <Text style={styles.screenSubtitle}>Honorarios y adeudos del despacho.</Text>
+        </View>
+        <Pressable style={styles.smallPrimaryButton} onPress={() => setFormOpen((current) => !current)}>
+          <Ionicons name={formOpen ? 'close' : 'add'} size={20} color="#ffffff" />
+        </Pressable>
+      </View>
+
+      {formOpen && (
+        <View style={styles.formPreview}>
+          <Text style={styles.cardTitle}>Nuevo cliente</Text>
+          <Text style={styles.inputLabel}>Nombre</Text>
+          <TextInput
+            onChangeText={setNombre}
+            placeholder="Nombre completo o razon social"
+            placeholderTextColor="#94a3b8"
+            style={styles.input}
+            value={nombre}
+          />
+          <View style={styles.twoColumnRow}>
+            <View style={styles.twoColumnField}>
+              <Text style={styles.inputLabel}>Monto pactado</Text>
+              <TextInput
+                keyboardType="decimal-pad"
+                onChangeText={setMontoPactado}
+                placeholder="0.00"
+                placeholderTextColor="#94a3b8"
+                style={styles.input}
+                value={montoPactado}
+              />
+            </View>
+            <View style={styles.twoColumnField}>
+              <Text style={styles.inputLabel}>Adeudo actual</Text>
+              <TextInput
+                keyboardType="decimal-pad"
+                onChangeText={setTotalAdeudo}
+                placeholder="0.00"
+                placeholderTextColor="#94a3b8"
+                style={styles.input}
+                value={totalAdeudo}
+              />
+            </View>
+          </View>
+          <Pressable style={styles.primaryAction} onPress={() => void createCliente()} disabled={saving}>
+            <Text style={styles.primaryActionText}>{saving ? 'Guardando...' : 'Guardar cliente'}</Text>
+          </Pressable>
+          {Boolean(errorMessage) && <Text style={styles.inlineError}>{errorMessage}</Text>}
+        </View>
+      )}
+
+      <TextInput
+        onChangeText={setSearch}
+        placeholder="Buscar cliente"
+        placeholderTextColor="#94a3b8"
+        style={styles.input}
+        value={search}
+      />
+      <Text style={styles.sectionMiniTitle}>{loading ? 'Cargando...' : `${visibleClientes.length} cliente(s)`}</Text>
+      {visibleClientes.length === 0 ? (
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyStateTitle}>Sin clientes</Text>
+          <Text style={styles.emptyStateText}>Agrega el primer cliente desde el boton superior.</Text>
+        </View>
+      ) : (
+        visibleClientes.map((cliente) => (
+          <View key={cliente.id} style={styles.recordCard}>
+            <View style={styles.recordTitleRow}>
+              <Text style={styles.cardTitle}>{cliente.nombre}</Text>
+              {canEdit && (
+                <Pressable style={styles.miniDangerButton} onPress={() => deleteCliente(cliente)}>
+                  <Ionicons name="trash-outline" size={17} color="#be123c" />
+                </Pressable>
+              )}
+            </View>
+            <View style={styles.moneyRow}>
+              <View style={styles.moneyCell}>
+                <Text style={styles.moneyLabel}>Pactado</Text>
+                <Text style={styles.moneyValue}>{formatCurrency(cliente.monto_pactado)}</Text>
+              </View>
+              <View style={styles.moneyCell}>
+                <Text style={styles.moneyLabel}>Adeudo</Text>
+                <Text style={[styles.moneyValue, cliente.total_adeudo > 0 && styles.moneyValueDue]}>
+                  {formatCurrency(cliente.total_adeudo)}
+                </Text>
+              </View>
+            </View>
+          </View>
+        ))
+      )}
     </View>
   );
 }
 
-function LaboralScreen() {
+function LaboralScreen({ selectedMembership }: { selectedMembership: DespachoMember | null }) {
+  const despachoId = selectedMembership?.despacho_id ?? '';
+  const canEdit = canEditMembership(selectedMembership);
+  const [asuntos, setAsuntos] = useState<MobileLaboralAsunto[]>([]);
+  const [section, setSection] = useState<LaboralSeccion>('conciliacion');
+  const [formOpen, setFormOpen] = useState(false);
+  const [partes, setPartes] = useState('');
+  const [numero, setNumero] = useState('');
+  const [procedimiento, setProcedimiento] = useState<LaboralProcedimiento>('normal');
+  const [fechaConciliacion, setFechaConciliacion] = useState(toDateInputValue());
+  const [hojaConciliacion, setHojaConciliacion] = useState(false);
+  const [notas, setNotas] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
+
+  const fetchAsuntos = useCallback(async () => {
+    if (!despachoId) {
+      setAsuntos([]);
+      return;
+    }
+    const { data, error } = await supabase
+      .from('laboral_asuntos')
+      .select('*')
+      .eq('despacho_id', despachoId)
+      .order('updated_at', { ascending: false });
+    if (error) setErrorMessage(error.message);
+    setAsuntos((data ?? []) as MobileLaboralAsunto[]);
+  }, [despachoId]);
+
+  useEffect(() => {
+    void fetchAsuntos();
+  }, [fetchAsuntos]);
+
+  const createAsunto = async () => {
+    if (!despachoId || !canEdit) {
+      setErrorMessage(canEdit ? 'Selecciona un despacho.' : 'Tu acceso es de solo lectura.');
+      return;
+    }
+    if (!partes.trim()) {
+      setErrorMessage('Escribe el nombre de las partes.');
+      return;
+    }
+    if (section !== 'conciliacion' && !numero.trim()) {
+      setErrorMessage('Escribe el numero de expediente.');
+      return;
+    }
+
+    const databaseDate = section === 'conciliacion' ? parseMexicanDateToDatabase(fechaConciliacion) : null;
+    if (section === 'conciliacion' && !databaseDate) {
+      setErrorMessage('Selecciona una fecha valida de conciliacion.');
+      return;
+    }
+
+    const { error } = await supabase.from('laboral_asuntos').insert([
+      {
+        despacho_id: despachoId,
+        seccion: section,
+        numero_expediente: section === 'conciliacion' ? null : numero.trim(),
+        partes: partes.trim(),
+        procedimiento: section === 'conciliacion' ? null : procedimiento,
+        fecha_conciliacion: section === 'conciliacion' ? databaseDate : null,
+        hoja_conciliacion: section === 'conciliacion' ? hojaConciliacion : null,
+        estatus: 'Activo',
+        notas: notas.trim(),
+      },
+    ]);
+
+    if (error) {
+      setErrorMessage(error.message);
+      return;
+    }
+
+    setPartes('');
+    setNumero('');
+    setNotas('');
+    setHojaConciliacion(false);
+    setFormOpen(false);
+    setErrorMessage('');
+    void fetchAsuntos();
+  };
+
+  const sectionLabels: Record<LaboralSeccion, string> = {
+    conciliacion: 'Conciliacion',
+    junta_local: 'Junta Local',
+    tribunal_laboral: 'Tribunal Laboral',
+  };
+
+  const visible = asuntos.filter((asunto) => asunto.seccion === section);
+
   return (
     <View style={styles.stack}>
-      <ScreenHeader title="Laboral" subtitle="Conciliacion, junta local y tribunal laboral." />
-      {laboralGroups.map((group) => (
-        <CompactRow key={group.title} title={group.title} detail={group.detail} icon="business-outline" />
-      ))}
+      <View style={styles.titleRow}>
+        <View style={styles.titleCopy}>
+          <Text style={styles.screenTitle}>Laboral</Text>
+          <Text style={styles.screenSubtitle}>Conciliacion, junta local y tribunal laboral.</Text>
+        </View>
+        <Pressable style={styles.smallPrimaryButton} onPress={() => setFormOpen((current) => !current)}>
+          <Ionicons name={formOpen ? 'close' : 'add'} size={20} color="#ffffff" />
+        </Pressable>
+      </View>
+
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.segmentRow}>
+        {(Object.keys(sectionLabels) as LaboralSeccion[]).map((item) => (
+          <Pressable
+            key={item}
+            style={[styles.segmentButton, section === item && styles.segmentButtonActive]}
+            onPress={() => setSection(item)}
+          >
+            <Text style={[styles.segmentButtonText, section === item && styles.segmentButtonTextActive]}>
+              {sectionLabels[item]}
+            </Text>
+          </Pressable>
+        ))}
+      </ScrollView>
+
+      {formOpen && (
+        <View style={styles.formPreview}>
+          <Text style={styles.cardTitle}>Nuevo asunto: {sectionLabels[section]}</Text>
+          <Text style={styles.inputLabel}>Partes</Text>
+          <TextInput
+            onChangeText={setPartes}
+            placeholder="Trabajador vs Empresa"
+            placeholderTextColor="#94a3b8"
+            style={styles.input}
+            value={partes}
+          />
+
+          {section === 'conciliacion' ? (
+            <>
+              <NativeDateTimeField
+                dateLabel="Fecha de conciliacion"
+                dateInput={fechaConciliacion}
+                timeInput="09:00"
+                onDateChange={setFechaConciliacion}
+                onTimeChange={() => undefined}
+                showTime={false}
+              />
+              <Pressable style={styles.toggleRow} onPress={() => setHojaConciliacion((current) => !current)}>
+                <View>
+                  <Text style={styles.cardTitle}>Hoja de conciliacion</Text>
+                  <Text style={styles.cardText}>Marca si ya se cuenta con la constancia.</Text>
+                </View>
+                <View style={[styles.toggleTrack, hojaConciliacion && styles.toggleTrackActive]}>
+                  <View style={[styles.toggleThumb, hojaConciliacion && styles.toggleThumbActive]} />
+                </View>
+              </Pressable>
+            </>
+          ) : (
+            <>
+              <Text style={styles.inputLabel}>Numero de expediente</Text>
+              <TextInput
+                onChangeText={setNumero}
+                placeholder="123/2026"
+                placeholderTextColor="#94a3b8"
+                style={styles.input}
+                value={numero}
+              />
+              <Text style={styles.inputLabel}>Procedimiento</Text>
+              <View style={styles.chipWrap}>
+                {(['normal', 'especial'] as LaboralProcedimiento[]).map((item) => (
+                  <Pressable
+                    key={item}
+                    style={[styles.choiceChip, procedimiento === item && styles.choiceChipActive]}
+                    onPress={() => setProcedimiento(item)}
+                  >
+                    <Text style={[styles.choiceChipText, procedimiento === item && styles.choiceChipTextActive]}>
+                      {item === 'normal' ? 'Normal' : 'Especial'}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            </>
+          )}
+
+          <Text style={styles.inputLabel}>Notas</Text>
+          <TextInput
+            multiline
+            onChangeText={setNotas}
+            placeholder="Pendientes o datos relevantes"
+            placeholderTextColor="#94a3b8"
+            style={[styles.input, styles.textArea]}
+            value={notas}
+          />
+          <Pressable style={styles.primaryAction} onPress={() => void createAsunto()}>
+            <Text style={styles.primaryActionText}>Guardar asunto</Text>
+          </Pressable>
+          {Boolean(errorMessage) && <Text style={styles.inlineError}>{errorMessage}</Text>}
+        </View>
+      )}
+
+      {visible.length === 0 ? (
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyStateTitle}>Sin asuntos en {sectionLabels[section]}</Text>
+          <Text style={styles.emptyStateText}>Usa el boton superior para registrar el primero.</Text>
+        </View>
+      ) : (
+        visible.map((asunto) => (
+          <View key={asunto.id} style={styles.recordCard}>
+            <View style={styles.recordTitleRow}>
+              <Text style={styles.cardTitle}>{asunto.numero_expediente || sectionLabels[asunto.seccion]}</Text>
+              <Text style={styles.recordPill}>{asunto.estatus}</Text>
+            </View>
+            <Text style={styles.cardText}>{asunto.partes}</Text>
+            {asunto.fecha_conciliacion && (
+              <Text style={styles.cardText}>Conciliacion: {toMexicanDateFromDatabase(asunto.fecha_conciliacion)}</Text>
+            )}
+            {asunto.procedimiento && <Text style={styles.cardText}>Procedimiento: {asunto.procedimiento}</Text>}
+            {Boolean(asunto.notas) && <Text style={styles.cardText}>{asunto.notas}</Text>}
+          </View>
+        ))
+      )}
     </View>
   );
 }
@@ -2264,6 +3754,16 @@ function TeamChatScreen({
     });
   };
 
+  const handleCameraFile = async () => {
+    setErrorMessage('');
+    const captured = await pickCameraImage();
+    if (captured.error) {
+      setErrorMessage(captured.error);
+      return;
+    }
+    setSelectedFile(captured.file);
+  };
+
   const openAttachment = async (attachment: ChatAttachment) => {
     const signedUrl = attachmentUrls[attachment.id];
     if (!signedUrl) {
@@ -2272,6 +3772,20 @@ function TeamChatScreen({
     }
 
     await Linking.openURL(signedUrl);
+  };
+
+  const shareAttachment = async (attachment: ChatAttachment) => {
+    const signedUrl = attachmentUrls[attachment.id];
+    if (!signedUrl) {
+      setErrorMessage('No se pudo generar el enlace del archivo.');
+      return;
+    }
+
+    try {
+      await shareRemoteFile(signedUrl, attachment.file_name, attachment.file_type);
+    } catch (shareError) {
+      setErrorMessage(shareError instanceof Error ? shareError.message : 'No se pudo compartir el archivo.');
+    }
   };
 
   const uploadAttachment = async (messageId: string, file: SelectedChatFile) => {
@@ -2471,7 +3985,15 @@ function TeamChatScreen({
                         <Text style={styles.attachmentName}>{attachment.file_name}</Text>
                         <Text style={styles.attachmentSize}>{formatFileSize(attachment.file_size)}</Text>
                       </View>
-                      <Ionicons name="open-outline" size={16} color="#64748b" />
+                      <Pressable
+                        style={styles.attachmentShareButton}
+                        onPress={(event) => {
+                          event.stopPropagation();
+                          void shareAttachment(attachment);
+                        }}
+                      >
+                        <Ionicons name="share-social-outline" size={17} color="#1d4ed8" />
+                      </Pressable>
                     </Pressable>
                   ))}
                 </View>
@@ -2507,6 +4029,9 @@ function TeamChatScreen({
           <Pressable style={styles.secondaryIconButton} onPress={handlePickFile}>
             <Ionicons name="attach-outline" size={20} color="#1d4ed8" />
           </Pressable>
+          <Pressable style={styles.secondaryIconButton} onPress={handleCameraFile}>
+            <Ionicons name="camera-outline" size={20} color="#1d4ed8" />
+          </Pressable>
           <Text style={styles.messageCounter}>{body.length}/2000</Text>
           <Pressable
             style={[styles.sendButton, (sending || (!body.trim() && !selectedFile)) && styles.sendButtonDisabled]}
@@ -2521,42 +4046,384 @@ function TeamChatScreen({
   );
 }
 
-function JurisPremiumScreen({ onNavigate }: { onNavigate: (section: Section) => void }) {
+function DespachosScreen({
+  memberships,
+  selectedMembership,
+  onRefresh,
+  onSelect,
+}: {
+  memberships: DespachoMember[];
+  selectedMembership: DespachoMember | null;
+  onRefresh: () => Promise<void>;
+  onSelect: (membership: DespachoMember) => void;
+}) {
+  const [deskName, setDeskName] = useState('');
+  const [inviteCode, setInviteCode] = useState('');
+  const [working, setWorking] = useState<'create' | 'join' | null>(null);
+  const [feedback, setFeedback] = useState('');
+  const ownedCount = memberships.filter((membership) => membership.role === 'owner').length;
+
+  const createDespacho = async () => {
+    if (!deskName.trim()) {
+      setFeedback('Escribe el nombre del despacho.');
+      return;
+    }
+    if (ownedCount >= 2) {
+      setFeedback('Ya creaste el maximo de 2 despachos.');
+      return;
+    }
+
+    setWorking('create');
+    setFeedback('');
+    const { error } = await supabase.rpc('create_despacho', { despacho_nombre: deskName.trim() });
+    if (error) {
+      setFeedback(error.message);
+    } else {
+      setDeskName('');
+      setFeedback('Despacho creado correctamente.');
+      await onRefresh();
+    }
+    setWorking(null);
+  };
+
+  const joinDespacho = async () => {
+    if (!inviteCode.trim()) {
+      setFeedback('Escribe el codigo de invitacion.');
+      return;
+    }
+
+    setWorking('join');
+    setFeedback('');
+    const { error } = await supabase.rpc('join_despacho_by_code', { invitation_code: inviteCode.trim() });
+    if (error) {
+      setFeedback(error.message);
+    } else {
+      setInviteCode('');
+      setFeedback('Te uniste como solo lectura. Un administrador puede darte permiso de edicion.');
+      await onRefresh();
+    }
+    setWorking(null);
+  };
+
   return (
     <View style={styles.stack}>
-      <View style={styles.jurisHero}>
-        <JurisFace />
-        <View style={styles.jurisHeroCopy}>
-          <Text style={styles.kicker}>Centro interno</Text>
-          <Text style={styles.screenTitle}>Ayuda del despacho</Text>
-          <Text style={styles.screenSubtitle}>Accesos y pasos frecuentes para el trabajo diario.</Text>
+      <ScreenHeader title="Despachos" subtitle="Crea tu espacio de trabajo o unete mediante un codigo." />
+
+      <View style={styles.formPreview}>
+        <View style={styles.recordTitleRow}>
+          <Text style={styles.cardTitle}>Crear despacho</Text>
+          <Text style={styles.recordPill}>{ownedCount}/2 propios</Text>
         </View>
+        <Text style={styles.inputLabel}>Nombre</Text>
+        <TextInput
+          onChangeText={setDeskName}
+          placeholder="Martinez Legal"
+          placeholderTextColor="#94a3b8"
+          style={styles.input}
+          value={deskName}
+        />
+        <Pressable style={styles.primaryAction} onPress={() => void createDespacho()} disabled={working !== null}>
+          {working === 'create' ? <ActivityIndicator color="#ffffff" /> : <Text style={styles.primaryActionText}>Crear despacho</Text>}
+        </Pressable>
       </View>
 
-      <View style={styles.chatCard}>
-        <Text style={styles.botBubble}>
-          Selecciona una opcion o escribe la tarea que necesitas ubicar dentro del despacho.
-        </Text>
-        <Text style={styles.userBubble}>Como registro una audiencia?</Text>
-        <Text style={styles.botBubble}>
-          Entra a Movimientos, selecciona Audiencia y escribe la fecha con formato 00/00/0000.
-        </Text>
+      <View style={styles.formPreview}>
+        <Text style={styles.cardTitle}>Unirme a un despacho</Text>
+        <Text style={styles.cardText}>El codigo cambia cada dia y el acceso inicial siempre es de solo lectura.</Text>
+        <Text style={styles.inputLabel}>Codigo de invitacion</Text>
+        <TextInput
+          autoCapitalize="characters"
+          onChangeText={setInviteCode}
+          placeholder="JM-XXXX-XXXX"
+          placeholderTextColor="#94a3b8"
+          style={styles.input}
+          value={inviteCode}
+        />
+        <Pressable style={styles.secondaryAction} onPress={() => void joinDespacho()} disabled={working !== null}>
+          {working === 'join' ? <ActivityIndicator color="#1d4ed8" /> : <Text style={styles.secondaryActionText}>Unirme</Text>}
+        </Pressable>
       </View>
 
-      <View style={styles.shortcutGrid}>
-        {[
-          { label: 'Expedientes', target: 'expedientes' as Section },
-          { label: 'Movimientos', target: 'movimientos' as Section },
-          { label: 'Calendario', target: 'calendario' as Section },
-          { label: 'Archivo', target: 'archivo' as Section },
-        ].map((shortcut) => (
-          <Pressable key={shortcut.label} style={styles.shortcutButton} onPress={() => onNavigate(shortcut.target)}>
-            <Text style={styles.shortcutText}>{shortcut.label}</Text>
-            <Ionicons name="arrow-forward" size={16} color="#1d4ed8" />
+      {Boolean(feedback) && <Text style={styles.inlineFeedback}>{feedback}</Text>}
+
+      <Text style={styles.sectionMiniTitle}>Mis despachos</Text>
+      {memberships.length === 0 ? (
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyStateTitle}>Todavia no perteneces a un despacho</Text>
+          <Text style={styles.emptyStateText}>Crea uno o solicita el codigo diario al propietario.</Text>
+        </View>
+      ) : (
+        memberships.map((membership) => {
+          const active = membership.id === selectedMembership?.id;
+          return (
+            <Pressable
+              key={membership.id}
+              style={[styles.compactRow, active && styles.compactRowActive]}
+              onPress={() => onSelect(membership)}
+            >
+              <View style={styles.compactIcon}>
+                <Ionicons name="briefcase-outline" size={19} color="#1d4ed8" />
+              </View>
+              <View style={styles.compactCopy}>
+                <Text style={styles.cardTitle}>{getDespachoName(membership)}</Text>
+                <Text style={styles.cardText}>{roleLabels[membership.role]}</Text>
+              </View>
+              {active ? (
+                <Ionicons name="checkmark-circle" size={21} color="#15803d" />
+              ) : (
+                <Ionicons name="chevron-forward" size={18} color="#94a3b8" />
+              )}
+            </Pressable>
+          );
+        })
+      )}
+    </View>
+  );
+}
+
+function MoreScreen({ onNavigate }: { onNavigate: (section: Section) => void }) {
+  const options: Array<{
+    title: string;
+    detail: string;
+    icon: keyof typeof Ionicons.glyphMap;
+    target: Section;
+  }> = [
+    { title: 'Movimientos', detail: 'Acuerdos, promociones y documentos.', icon: 'document-attach-outline', target: 'movimientos' },
+    { title: 'Clientes', detail: 'Honorarios y adeudos.', icon: 'people-outline', target: 'clientes' },
+    { title: 'Laboral', detail: 'Conciliacion y expedientes laborales.', icon: 'business-outline', target: 'laboral' },
+    { title: 'Despachos', detail: 'Crear, unirse y cambiar espacio de trabajo.', icon: 'briefcase-outline', target: 'despachos' },
+    { title: 'Archivo', detail: 'Expedientes archivados y recuperacion.', icon: 'archive-outline', target: 'archivo' },
+    { title: 'Todos los expedientes', detail: 'Directorio por fecha de modificacion.', icon: 'list-outline', target: 'totalExpedientes' },
+    { title: 'Configuracion', detail: 'Perfil, seguridad y actualizaciones.', icon: 'settings-outline', target: 'configuracion' },
+  ];
+
+  return (
+    <View style={styles.stack}>
+      <ScreenHeader title="Mas" subtitle="Herramientas administrativas y modulos complementarios." />
+      <View style={styles.moreGrid}>
+        {options.map((option) => (
+          <Pressable key={option.target} style={styles.moreCard} onPress={() => onNavigate(option.target)}>
+            <View style={styles.moreIcon}>
+              <Ionicons name={option.icon} size={22} color="#1d4ed8" />
+            </View>
+            <Text style={styles.cardTitle}>{option.title}</Text>
+            <Text style={styles.cardText}>{option.detail}</Text>
           </Pressable>
         ))}
       </View>
     </View>
+  );
+}
+
+function QuickActionsModal({
+  visible,
+  onClose,
+  onSelect,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onSelect: (action: QuickAction) => void;
+}) {
+  const actions: Array<{
+    id: QuickAction;
+    title: string;
+    detail: string;
+    icon: keyof typeof Ionicons.glyphMap;
+  }> = [
+    { id: 'expediente', title: 'Nuevo expediente', detail: 'Registrar juzgado, partes y archivo.', icon: 'folder-open-outline' },
+    { id: 'movimiento', title: 'Nuevo movimiento', detail: 'Agregar acuerdo o promocion.', icon: 'document-attach-outline' },
+    { id: 'audiencia', title: 'Nueva audiencia', detail: 'Agendar y programar avisos.', icon: 'calendar-outline' },
+    { id: 'cliente', title: 'Nuevo cliente', detail: 'Registrar honorarios y adeudo.', icon: 'person-add-outline' },
+    { id: 'scan', title: 'Escanear documento', detail: 'Usar la camara y adjuntarlo.', icon: 'scan-outline' },
+  ];
+
+  return (
+    <Modal animationType="fade" transparent visible={visible} onRequestClose={onClose}>
+      <Pressable style={styles.modalBackdrop} onPress={onClose}>
+        <Pressable style={styles.bottomSheet} onPress={(event) => event.stopPropagation()}>
+          <View style={styles.sheetHandle} />
+          <View style={styles.sheetHeader}>
+            <View>
+              <Text style={styles.sheetTitle}>Acciones rapidas</Text>
+              <Text style={styles.sheetSubtitle}>Que necesitas registrar?</Text>
+            </View>
+            <Pressable style={styles.iconButton} onPress={onClose}>
+              <Ionicons name="close" size={20} color="#1d4ed8" />
+            </Pressable>
+          </View>
+          {actions.map((action) => (
+            <Pressable key={action.id} style={styles.sheetAction} onPress={() => onSelect(action.id)}>
+              <View style={styles.sheetActionIcon}>
+                <Ionicons name={action.icon} size={21} color="#1d4ed8" />
+              </View>
+              <View style={styles.sheetActionCopy}>
+                <Text style={styles.cardTitle}>{action.title}</Text>
+                <Text style={styles.cardText}>{action.detail}</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color="#94a3b8" />
+            </Pressable>
+          ))}
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+function DespachoPickerModal({
+  visible,
+  memberships,
+  selectedMembership,
+  loading,
+  error,
+  onClose,
+  onSelect,
+  onRefresh,
+  onManage,
+}: {
+  visible: boolean;
+  memberships: DespachoMember[];
+  selectedMembership: DespachoMember | null;
+  loading: boolean;
+  error: string;
+  onClose: () => void;
+  onSelect: (membership: DespachoMember) => void;
+  onRefresh: () => Promise<void>;
+  onManage: () => void;
+}) {
+  return (
+    <Modal animationType="fade" transparent visible={visible} onRequestClose={onClose}>
+      <Pressable style={styles.modalBackdrop} onPress={onClose}>
+        <Pressable style={styles.bottomSheet} onPress={(event) => event.stopPropagation()}>
+          <View style={styles.sheetHandle} />
+          <View style={styles.sheetHeader}>
+            <View>
+              <Text style={styles.sheetTitle}>Cambiar despacho</Text>
+              <Text style={styles.sheetSubtitle}>Todos los modulos usaran el despacho seleccionado.</Text>
+            </View>
+            <Pressable style={styles.iconButton} onPress={() => void onRefresh()}>
+              {loading ? <ActivityIndicator size="small" color="#1d4ed8" /> : <Ionicons name="refresh" size={19} color="#1d4ed8" />}
+            </Pressable>
+          </View>
+          {Boolean(error) && <Text style={styles.inlineError}>{error}</Text>}
+          {memberships.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyStateTitle}>Sin despachos disponibles</Text>
+              <Text style={styles.emptyStateText}>Crea o unete a uno desde la aplicacion de escritorio.</Text>
+            </View>
+          ) : (
+            memberships.map((membership) => {
+              const active = membership.id === selectedMembership?.id;
+              return (
+                <Pressable
+                  key={membership.id}
+                  style={[styles.sheetAction, active && styles.sheetActionActive]}
+                  onPress={() => onSelect(membership)}
+                >
+                  <View style={styles.sheetActionIcon}>
+                    <Ionicons name="briefcase-outline" size={21} color="#1d4ed8" />
+                  </View>
+                  <View style={styles.sheetActionCopy}>
+                    <Text style={styles.cardTitle}>{getDespachoName(membership)}</Text>
+                    <Text style={styles.cardText}>{roleLabels[membership.role]}</Text>
+                  </View>
+                  {active && <Ionicons name="checkmark-circle" size={21} color="#15803d" />}
+                </Pressable>
+              );
+            })
+          )}
+          <Pressable style={styles.secondaryAction} onPress={onManage}>
+            <Text style={styles.secondaryActionText}>Crear o unirme a un despacho</Text>
+          </Pressable>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+function NativeDateTimeField({
+  dateLabel,
+  dateInput,
+  timeInput,
+  onDateChange,
+  onTimeChange,
+  showTime,
+  futureOnly = false,
+}: {
+  dateLabel: string;
+  dateInput: string;
+  timeInput: string;
+  onDateChange: (value: string) => void;
+  onTimeChange: (value: string) => void;
+  showTime: boolean;
+  futureOnly?: boolean;
+}) {
+  const [pickerMode, setPickerMode] = useState<'date' | 'time' | null>(null);
+  const pickerDate = parseCalendarDate(dateInput || toDateInputValue(), timeInput || '09:00') ?? new Date();
+
+  const handlePickerChange = (_event: DateTimePickerEvent, selectedDate?: Date) => {
+    setPickerMode(null);
+    if (!selectedDate) return;
+    if (pickerMode === 'date') onDateChange(toDateInputValue(selectedDate));
+    if (pickerMode === 'time') onTimeChange(toTimeInputValue(selectedDate));
+  };
+
+  if (Platform.OS === 'web') {
+    return (
+      <>
+        <Text style={styles.inputLabel}>{dateLabel}</Text>
+        <TextInput
+          keyboardType="numeric"
+          onChangeText={onDateChange}
+          placeholder="00/00/0000"
+          placeholderTextColor="#94a3b8"
+          style={styles.input}
+          value={dateInput}
+        />
+        {showTime && (
+          <>
+            <Text style={styles.inputLabel}>Hora</Text>
+            <TextInput
+              keyboardType="numeric"
+              onChangeText={onTimeChange}
+              placeholder="09:00"
+              placeholderTextColor="#94a3b8"
+              style={styles.input}
+              value={timeInput}
+            />
+          </>
+        )}
+      </>
+    );
+  }
+
+  return (
+    <>
+      <Text style={styles.inputLabel}>{dateLabel}</Text>
+      <Pressable style={styles.datePickerButton} onPress={() => setPickerMode('date')}>
+        <Ionicons name="calendar-outline" size={20} color="#1d4ed8" />
+        <Text style={styles.datePickerText}>{dateInput || 'Seleccionar fecha'}</Text>
+        <Ionicons name="chevron-down" size={17} color="#64748b" />
+      </Pressable>
+      {showTime && (
+        <>
+          <Text style={styles.inputLabel}>Hora</Text>
+          <Pressable style={styles.datePickerButton} onPress={() => setPickerMode('time')}>
+            <Ionicons name="time-outline" size={20} color="#1d4ed8" />
+            <Text style={styles.datePickerText}>{timeInput || 'Seleccionar hora'}</Text>
+            <Ionicons name="chevron-down" size={17} color="#64748b" />
+          </Pressable>
+        </>
+      )}
+      {pickerMode && (
+        <DateTimePicker
+          value={pickerDate}
+          mode={pickerMode}
+          display="default"
+          minimumDate={pickerMode === 'date' && futureOnly ? new Date() : undefined}
+          onChange={handlePickerChange}
+        />
+      )}
+    </>
   );
 }
 
@@ -2574,6 +4441,11 @@ function ConfiguracionScreen({
   updateMessage,
   onCheckForUpdates,
   onInstallUpdate,
+  biometricAvailable,
+  biometricEnabled,
+  onBiometricChange,
+  subscriptionStatus,
+  trialEndsAt,
 }: {
   email: string;
   selectedMembership: DespachoMember | null;
@@ -2588,6 +4460,11 @@ function ConfiguracionScreen({
   updateMessage: string;
   onCheckForUpdates: () => void;
   onInstallUpdate: () => void;
+  biometricAvailable: boolean;
+  biometricEnabled: boolean;
+  onBiometricChange: (enabled: boolean) => Promise<void>;
+  subscriptionStatus?: AppProfile['subscription_status'];
+  trialEndsAt?: string | null;
 }) {
   const displayName = profileSettings.displayName.trim() || email.split('@')[0] || 'Colaborador';
   const updateField = (key: keyof ProfileSettings, value: string) => {
@@ -2661,6 +4538,42 @@ function ConfiguracionScreen({
         </View>
       </View>
 
+      <View style={styles.securityCard}>
+        <View style={styles.securityCardHeader}>
+          <View style={styles.securityIcon}>
+            <Ionicons name="finger-print-outline" size={23} color="#1d4ed8" />
+          </View>
+          <View style={styles.securityCopy}>
+            <Text style={styles.cardTitle}>Bloqueo biometrico</Text>
+            <Text style={styles.cardText}>
+              {biometricAvailable
+                ? 'Pide huella o reconocimiento facial al volver a abrir la app.'
+                : 'Configura la biometria en el telefono para activar esta opcion.'}
+            </Text>
+          </View>
+          <Pressable
+            accessibilityRole="switch"
+            accessibilityState={{ checked: biometricEnabled }}
+            style={[styles.toggleTrack, biometricEnabled && styles.toggleTrackActive]}
+            onPress={() => void onBiometricChange(!biometricEnabled)}
+          >
+            <View style={[styles.toggleThumb, biometricEnabled && styles.toggleThumbActive]} />
+          </Pressable>
+        </View>
+      </View>
+
+      <View style={styles.subscriptionCard}>
+        <View style={styles.recordTitleRow}>
+          <Text style={styles.cardTitle}>Estado de la cuenta</Text>
+          <Text style={styles.recordPill}>{subscriptionStatus || 'trial'}</Text>
+        </View>
+        <Text style={styles.cardText}>
+          {trialEndsAt
+            ? `Periodo de prueba hasta ${new Intl.DateTimeFormat('es-MX', { dateStyle: 'medium' }).format(new Date(trialEndsAt))}.`
+            : 'La cuenta esta vinculada al portal y al panel administrativo.'}
+        </Text>
+      </View>
+
       <View style={styles.updateCard}>
         <View style={styles.updateCardHeader}>
           <View style={styles.updateCardIcon}>
@@ -2700,12 +4613,6 @@ function ConfiguracionScreen({
       </View>
 
       <CompactList items={['Cambiar contrasena', 'Anadir telefono', 'Cambiar correo', 'Enviar reporte']} />
-      {JURIS_PREMIUM_UNLOCKED && (
-        <Pressable style={styles.primaryAction} onPress={() => onNavigate('juris')}>
-          <Text style={styles.primaryActionText}>Abrir centro premium</Text>
-          <Ionicons name="sparkles-outline" size={18} color="#ffffff" />
-        </Pressable>
-      )}
       <Pressable style={styles.secondaryAction} onPress={() => Linking.openURL(PORTAL_URL)}>
         <Text style={styles.secondaryActionText}>Abrir portal web</Text>
       </Pressable>
@@ -2723,29 +4630,6 @@ function ScreenHeader({ title, subtitle }: { title: string; subtitle: string }) 
         <Text style={styles.screenTitle}>{title}</Text>
         <Text style={styles.screenSubtitle}>{subtitle}</Text>
       </View>
-    </View>
-  );
-}
-
-function CompactRow({
-  title,
-  detail,
-  icon,
-}: {
-  title: string;
-  detail: string;
-  icon: keyof typeof Ionicons.glyphMap;
-}) {
-  return (
-    <View style={styles.compactRow}>
-      <View style={styles.compactIcon}>
-        <Ionicons name={icon} size={19} color="#1d4ed8" />
-      </View>
-      <View style={styles.compactCopy}>
-        <Text style={styles.cardTitle}>{title}</Text>
-        <Text style={styles.cardText}>{detail}</Text>
-      </View>
-      <Ionicons name="chevron-forward" size={18} color="#94a3b8" />
     </View>
   );
 }
@@ -2775,19 +4659,6 @@ function TeamChatIcon() {
       <View style={[styles.teamIconAvatar, styles.teamIconAvatarRight]}>
         <Text style={styles.teamIconText}>L</Text>
       </View>
-    </View>
-  );
-}
-
-function JurisFace({ compact = false }: { compact?: boolean }) {
-  return (
-    <View style={[styles.jurisFace, compact && styles.jurisFaceCompact]}>
-      <View style={styles.jurisAntenna} />
-      <View style={styles.jurisEyes}>
-        <View style={styles.jurisEye} />
-        <View style={styles.jurisEye} />
-      </View>
-      <View style={styles.jurisMouth} />
     </View>
   );
 }
@@ -2823,7 +4694,7 @@ const styles = StyleSheet.create({
   authContent: {
     flexGrow: 1,
     justifyContent: 'center',
-    padding: 22,
+    paddingVertical: 22,
   },
   loadingScreen: {
     flex: 1,
@@ -2841,7 +4712,9 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   authShell: {
-    width: '100%',
+    width: '90%',
+    maxWidth: 460,
+    alignSelf: 'center',
     overflow: 'hidden',
     borderRadius: 6,
     backgroundColor: '#ffffff',
@@ -3743,6 +5616,16 @@ const styles = StyleSheet.create({
     fontSize: 11,
     marginTop: 2,
   },
+  attachmentShareButton: {
+    width: 34,
+    height: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    borderRadius: 6,
+    backgroundColor: '#ffffff',
+  },
   chatComposer: {
     gap: 10,
     borderWidth: 1,
@@ -3805,70 +5688,6 @@ const styles = StyleSheet.create({
   },
   sendButtonDisabled: {
     opacity: 0.45,
-  },
-  jurisHero: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
-    borderWidth: 1,
-    borderColor: '#bfdbfe',
-    borderRadius: 6,
-    padding: 16,
-    backgroundColor: '#eff6ff',
-  },
-  jurisHeroCopy: {
-    flex: 1,
-  },
-  chatCard: {
-    gap: 11,
-    borderWidth: 1,
-    borderColor: '#dbeafe',
-    borderRadius: 6,
-    padding: 14,
-    backgroundColor: '#ffffff',
-  },
-  botBubble: {
-    alignSelf: 'flex-start',
-    maxWidth: '90%',
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 6,
-    padding: 12,
-    overflow: 'hidden',
-    backgroundColor: '#ffffff',
-    color: '#0f172a',
-    lineHeight: 19,
-  },
-  userBubble: {
-    alignSelf: 'flex-end',
-    maxWidth: '86%',
-    borderRadius: 6,
-    padding: 12,
-    overflow: 'hidden',
-    backgroundColor: '#1d4ed8',
-    color: '#ffffff',
-    lineHeight: 19,
-  },
-  shortcutGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  shortcutButton: {
-    minHeight: 42,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    borderWidth: 1,
-    borderColor: '#bfdbfe',
-    borderRadius: 6,
-    paddingHorizontal: 12,
-    backgroundColor: '#ffffff',
-  },
-  shortcutText: {
-    color: '#1d4ed8',
-    fontSize: 13,
-    fontWeight: '900',
   },
   profileCard: {
     flexDirection: 'row',
@@ -4036,47 +5855,594 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '900',
   },
-  jurisFace: {
-    width: 76,
-    height: 76,
+  loadingPlainScreen: {
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 2,
-    borderColor: '#bfdbfe',
-    borderRadius: 22,
-    backgroundColor: '#2563eb',
-    shadowColor: '#1d4ed8',
-    shadowOpacity: 0.22,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 6 },
+    gap: 15,
+    padding: 24,
+    backgroundColor: '#f8fafc',
   },
-  jurisFaceCompact: {
-    width: 56,
-    height: 56,
-    borderRadius: 16,
+  loadingPlainText: {
+    color: '#334155',
+    fontSize: 15,
+    fontWeight: '800',
   },
-  jurisAntenna: {
-    position: 'absolute',
-    top: -13,
-    width: 2,
-    height: 12,
-    backgroundColor: '#bfdbfe',
+  blockedScreen: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 16,
+    padding: 28,
+    backgroundColor: '#f8fafc',
   },
-  jurisEyes: {
+  blockedTitle: {
+    color: '#0f172a',
+    fontSize: 24,
+    fontWeight: '900',
+    textAlign: 'center',
+  },
+  blockedText: {
+    maxWidth: 520,
+    color: '#475569',
+    fontSize: 15,
+    lineHeight: 23,
+    textAlign: 'center',
+  },
+  blockedMeta: {
+    color: '#be123c',
+    fontSize: 13,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  biometricScreen: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 16,
+    padding: 28,
+  },
+  biometricTitle: {
+    color: '#ffffff',
+    fontSize: 24,
+    fontWeight: '900',
+    textAlign: 'center',
+  },
+  biometricText: {
+    maxWidth: 420,
+    color: '#cbd5e1',
+    fontSize: 15,
+    lineHeight: 22,
+    textAlign: 'center',
+  },
+  biometricButton: {
+    minHeight: 50,
     flexDirection: 'row',
-    gap: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 9,
+    borderRadius: 6,
+    marginTop: 8,
+    paddingHorizontal: 20,
+    backgroundColor: '#d4ab4e',
   },
-  jurisEye: {
-    width: 13,
-    height: 13,
-    borderRadius: 7,
+  biometricButtonText: {
+    color: '#0c1424',
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  despachoSelector: {
+    minHeight: 54,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#243042',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: '#111c2d',
+  },
+  despachoSelectorIcon: {
+    width: 34,
+    height: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#665628',
+    borderRadius: 6,
+    backgroundColor: '#172033',
+  },
+  despachoSelectorCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  despachoSelectorLabel: {
+    color: '#94a3b8',
+    fontSize: 10,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  despachoSelectorName: {
+    marginTop: 2,
+    color: '#f8fafc',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  offlineBanner: {
+    minHeight: 42,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+    borderBottomWidth: 1,
+    borderBottomColor: '#fecaca',
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    backgroundColor: '#fef2f2',
+  },
+  offlineBannerText: {
+    flex: 1,
+    color: '#7f1d1d',
+    fontSize: 12,
+    fontWeight: '800',
+    lineHeight: 17,
+  },
+  bottomBar: {
+    minHeight: 72,
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    borderTopWidth: 1,
+    borderTopColor: '#cbd5e1',
+    paddingBottom: Platform.OS === 'ios' ? 12 : 4,
     backgroundColor: '#ffffff',
   },
-  jurisMouth: {
-    width: 35,
-    height: 7,
-    borderRadius: 5,
-    marginTop: 13,
-    backgroundColor: '#dbeafe',
+  bottomItemSlot: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+  },
+  bottomItem: {
+    width: '100%',
+    minHeight: 62,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 3,
+    borderTopWidth: 2,
+    borderTopColor: 'transparent',
+  },
+  bottomItemMiddle: {
+    paddingTop: 23,
+  },
+  bottomItemActive: {
+    borderTopColor: '#1d4ed8',
+    backgroundColor: '#f8fafc',
+  },
+  bottomItemText: {
+    color: '#64748b',
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  bottomItemTextActive: {
+    color: '#1d4ed8',
+  },
+  quickActionButton: {
+    position: 'absolute',
+    top: -23,
+    zIndex: 3,
+    width: 54,
+    height: 54,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 5,
+    borderColor: '#f1f5f9',
+    borderRadius: 27,
+    backgroundColor: '#d4ab4e',
+    shadowColor: '#0f172a',
+    shadowOpacity: 0.22,
+    shadowRadius: 7,
+    shadowOffset: { width: 0, height: 3 },
+  },
+  mobileQuickActionHero: {
+    minHeight: 86,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    borderWidth: 1,
+    borderColor: '#334155',
+    borderRadius: 6,
+    padding: 14,
+    backgroundColor: '#0c1424',
+  },
+  mobileQuickActionIcon: {
+    width: 48,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 6,
+    backgroundColor: '#d4ab4e',
+  },
+  mobileQuickActionCopy: {
+    flex: 1,
+  },
+  mobileQuickActionTitle: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '900',
+  },
+  mobileQuickActionText: {
+    marginTop: 4,
+    color: '#cbd5e1',
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  agendaPreview: {
+    borderWidth: 1,
+    borderColor: '#dbeafe',
+    borderRadius: 6,
+    padding: 14,
+    backgroundColor: '#ffffff',
+  },
+  agendaPreviewHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 10,
+  },
+  linkText: {
+    color: '#1d4ed8',
+    fontSize: 12,
+    fontWeight: '900',
+  },
+  agendaEmptyText: {
+    color: '#64748b',
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  agendaPreviewRow: {
+    minHeight: 68,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 11,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+    paddingVertical: 10,
+  },
+  agendaPreviewDate: {
+    width: 44,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 6,
+    backgroundColor: '#eff6ff',
+  },
+  agendaPreviewDay: {
+    color: '#1e40af',
+    fontSize: 18,
+    fontWeight: '900',
+  },
+  agendaPreviewMonth: {
+    color: '#1e40af',
+    fontSize: 10,
+    fontWeight: '900',
+  },
+  agendaPreviewCopy: {
+    flex: 1,
+  },
+  recordTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  recordTimestamp: {
+    marginTop: 10,
+    color: '#94a3b8',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  recordPressable: {
+    gap: 1,
+  },
+  recordDetails: {
+    gap: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+    marginTop: 12,
+    paddingTop: 12,
+  },
+  detailSectionTitle: {
+    color: '#1e40af',
+    fontSize: 12,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+  },
+  detailRow: {
+    borderLeftWidth: 3,
+    borderLeftColor: '#bfdbfe',
+    paddingLeft: 10,
+  },
+  detailRowTitle: {
+    color: '#0f172a',
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  detailRowText: {
+    marginTop: 3,
+    color: '#475569',
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  detailRowMeta: {
+    marginTop: 4,
+    color: '#94a3b8',
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  calendarActions: {
+    gap: 7,
+  },
+  audienceRecommendation: {
+    marginTop: 6,
+    color: '#1e40af',
+    fontSize: 12,
+    fontWeight: '800',
+    lineHeight: 17,
+  },
+  audienceTip: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 9,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    borderRadius: 6,
+    marginBottom: 14,
+    padding: 11,
+    backgroundColor: '#eff6ff',
+  },
+  audienceTipText: {
+    flex: 1,
+    color: '#1e3a8a',
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  twoColumnRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  twoColumnField: {
+    flex: 1,
+  },
+  miniDangerButton: {
+    width: 34,
+    height: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#fecaca',
+    borderRadius: 6,
+    backgroundColor: '#fef2f2',
+  },
+  moneyRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 12,
+  },
+  moneyCell: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 6,
+    padding: 10,
+    backgroundColor: '#f8fafc',
+  },
+  moneyLabel: {
+    color: '#64748b',
+    fontSize: 10,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+  },
+  moneyValue: {
+    marginTop: 5,
+    color: '#166534',
+    fontSize: 16,
+    fontWeight: '900',
+  },
+  moneyValueDue: {
+    color: '#be123c',
+  },
+  segmentRow: {
+    gap: 8,
+  },
+  segmentButton: {
+    minHeight: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    borderRadius: 6,
+    paddingHorizontal: 13,
+    backgroundColor: '#ffffff',
+  },
+  segmentButtonActive: {
+    borderColor: '#1d4ed8',
+    backgroundColor: '#1d4ed8',
+  },
+  segmentButtonText: {
+    color: '#1d4ed8',
+    fontSize: 12,
+    fontWeight: '900',
+  },
+  segmentButtonTextActive: {
+    color: '#ffffff',
+  },
+  toggleRow: {
+    minHeight: 70,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    borderWidth: 1,
+    borderColor: '#dbeafe',
+    borderRadius: 6,
+    marginBottom: 14,
+    padding: 12,
+    backgroundColor: '#f8fafc',
+  },
+  toggleTrack: {
+    width: 48,
+    height: 28,
+    justifyContent: 'center',
+    borderRadius: 14,
+    paddingHorizontal: 3,
+    backgroundColor: '#cbd5e1',
+  },
+  toggleTrackActive: {
+    backgroundColor: '#1d4ed8',
+  },
+  toggleThumb: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#ffffff',
+  },
+  toggleThumbActive: {
+    alignSelf: 'flex-end',
+  },
+  moreGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  moreCard: {
+    width: '48%',
+    minHeight: 142,
+    borderWidth: 1,
+    borderColor: '#dbeafe',
+    borderRadius: 6,
+    padding: 13,
+    backgroundColor: '#ffffff',
+  },
+  moreIcon: {
+    width: 42,
+    height: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 6,
+    marginBottom: 12,
+    backgroundColor: '#eff6ff',
+  },
+  modalBackdrop: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(2, 6, 23, 0.62)',
+  },
+  bottomSheet: {
+    maxHeight: '86%',
+    gap: 9,
+    borderTopLeftRadius: 8,
+    borderTopRightRadius: 8,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: Platform.OS === 'ios' ? 28 : 18,
+    backgroundColor: '#ffffff',
+  },
+  sheetHandle: {
+    width: 44,
+    height: 4,
+    alignSelf: 'center',
+    borderRadius: 2,
+    marginBottom: 5,
+    backgroundColor: '#cbd5e1',
+  },
+  sheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 4,
+  },
+  sheetTitle: {
+    color: '#0f172a',
+    fontSize: 21,
+    fontWeight: '900',
+  },
+  sheetSubtitle: {
+    marginTop: 3,
+    color: '#64748b',
+    fontSize: 12,
+  },
+  sheetAction: {
+    minHeight: 68,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 11,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 6,
+    padding: 11,
+    backgroundColor: '#ffffff',
+  },
+  sheetActionActive: {
+    borderColor: '#86efac',
+    backgroundColor: '#f0fdf4',
+  },
+  sheetActionIcon: {
+    width: 42,
+    height: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 6,
+    backgroundColor: '#eff6ff',
+  },
+  sheetActionCopy: {
+    flex: 1,
+  },
+  datePickerButton: {
+    minHeight: 50,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 6,
+    marginBottom: 14,
+    paddingHorizontal: 13,
+    backgroundColor: '#ffffff',
+  },
+  datePickerText: {
+    flex: 1,
+    color: '#0f172a',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  securityCard: {
+    borderWidth: 1,
+    borderColor: '#dbeafe',
+    borderRadius: 6,
+    padding: 14,
+    backgroundColor: '#ffffff',
+  },
+  securityCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 11,
+  },
+  securityIcon: {
+    width: 42,
+    height: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 6,
+    backgroundColor: '#eff6ff',
+  },
+  securityCopy: {
+    flex: 1,
+  },
+  subscriptionCard: {
+    borderWidth: 1,
+    borderColor: '#d9c57d',
+    borderRadius: 6,
+    padding: 14,
+    backgroundColor: '#fffdf5',
   },
 });

@@ -28,7 +28,7 @@ npm run typecheck
 - Personalizacion local del perfil visible.
 - Chat de equipo conectado a Supabase por despacho, con mensajes, realtime, adjuntos y enlaces privados firmados.
 - Calendario local con recordatorios de audiencia usando notificaciones del dispositivo.
-- Juris queda reservado para desbloqueo premium.
+- La app movil se concentra en expedientes, audiencias, clientes, documentos y colaboracion; las herramientas de escritorio permanecen en la version de Windows.
 - Branding con el logo actual.
 
 ## Siguiente fase
