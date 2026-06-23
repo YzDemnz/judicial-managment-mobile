@@ -192,6 +192,8 @@ interface AppProfile {
   ban_reason?: string | null;
   disabled_reason?: string | null;
   trial_ends_at?: string | null;
+  telefono?: string | null;
+  correo_alternativo?: string | null;
 }
 
 interface ChatAttachment {
@@ -235,6 +237,7 @@ const NOTIFICATION_CHANNEL_ID = 'audiencias';
 const CHAT_FILES_BUCKET = 'despacho-chat-files';
 const DOCUMENT_FILES_BUCKET = 'despacho-document-files';
 const MAX_CHAT_FILE_SIZE = 25 * 1024 * 1024;
+const MAX_DOCUMENT_FILE_SIZE = 100 * 1024 * 1024;
 const UPDATE_PROMPT_STORAGE_KEY = 'judicial-mobile-last-update-prompt';
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
@@ -323,6 +326,24 @@ const roleLabels: Record<DespachoRole, string> = {
   viewer: 'Solo lectura',
 };
 
+const membershipRoleWeight: Record<DespachoRole, number> = {
+  owner: 4,
+  admin: 3,
+  editor: 2,
+  viewer: 1,
+};
+
+const dedupeMemberships = (items: DespachoMember[]) => {
+  const unique = new Map<string, DespachoMember>();
+  for (const membership of items) {
+    const current = unique.get(membership.despacho_id);
+    if (!current || membershipRoleWeight[membership.role] > membershipRoleWeight[current.role]) {
+      unique.set(membership.despacho_id, membership);
+    }
+  }
+  return [...unique.values()];
+};
+
 const genericNameLabels: Record<DespachoRole, string> = {
   owner: 'Propietario',
   admin: 'Administrador',
@@ -341,7 +362,7 @@ const allowedChatMimeByExtension: Record<string, string> = {
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 };
 
-const chatDocumentTypes = [...new Set([...Object.values(allowedChatMimeByExtension), 'image/*'])];
+const chatDocumentTypes = '*/*';
 
 const defaultProfileSettings: ProfileSettings = {
   displayName: '',
@@ -427,7 +448,8 @@ const getSupportedFileType = (fileName: string, mimeType?: string | null) => {
 };
 
 const isAllowedChatFile = (fileName: string) => {
-  return Boolean(allowedChatMimeByExtension[getFileExtension(fileName)]);
+  void fileName;
+  return true;
 };
 
 const isAllowedDocumentFile = isAllowedChatFile;
@@ -546,12 +568,8 @@ const pickSupportedDocumentFile = async () => {
   const size = asset.size ?? assetFile?.size ?? 0;
   const mimeType = getSupportedFileType(asset.name, asset.mimeType);
 
-  if (!isAllowedDocumentFile(asset.name)) {
-    return { file: null, error: 'Solo se permiten imagenes, PDF, Word .doc y Word .docx.' };
-  }
-
-  if (size > MAX_CHAT_FILE_SIZE) {
-    return { file: null, error: 'El archivo debe pesar 25 MB o menos.' };
+  if (size > MAX_DOCUMENT_FILE_SIZE) {
+    return { file: null, error: 'El archivo debe pesar 100 MB o menos.' };
   }
 
   return {
@@ -907,7 +925,7 @@ export default function App() {
       try {
         const { data } = await supabase
           .from('app_profiles')
-          .select('id,email,account_status,subscription_status,ban_until,ban_reason,disabled_reason,trial_ends_at')
+          .select('id,email,account_status,subscription_status,ban_until,ban_reason,disabled_reason,trial_ends_at,telefono,correo_alternativo')
           .eq('id', session.user.id)
           .maybeSingle();
         if (!mounted) return;
@@ -1009,6 +1027,7 @@ export default function App() {
     const { data, error: membershipsFetchError } = await supabase
       .from('despacho_miembros')
       .select('*, despacho:despachos(*)')
+      .eq('user_id', session.user.id)
       .order('created_at', { ascending: true });
 
     if (membershipsFetchError) {
@@ -1019,11 +1038,16 @@ export default function App() {
       return;
     }
 
-    const activeMemberships = ((data ?? []) as DespachoMember[]).filter((membership) => !membership.despacho?.deleted_at);
+    const activeMemberships = dedupeMemberships(
+      ((data ?? []) as DespachoMember[]).filter((membership) => !membership.despacho?.deleted_at),
+    );
     const savedDespachoId = await AsyncStorage.getItem(SELECTED_DESPACHO_STORAGE_KEY).catch(() => null);
     setMemberships(activeMemberships);
     setSelectedMembership((current) => {
-      if (current && activeMemberships.some((membership) => membership.id === current.id)) return current;
+      if (current) {
+        const currentDesk = activeMemberships.find((membership) => membership.despacho_id === current.despacho_id);
+        if (currentDesk) return currentDesk;
+      }
       if (savedDespachoId) {
         const savedMembership = activeMemberships.find((membership) => membership.despacho_id === savedDespachoId);
         if (savedMembership) return savedMembership;
@@ -1757,6 +1781,7 @@ export default function App() {
             onBiometricChange={setBiometricPreference}
             subscriptionStatus={appProfile?.subscription_status}
             trialEndsAt={appProfile?.trial_ends_at}
+            accountProfile={appProfile}
           />
         )}
       </ScrollView>
@@ -3771,11 +3796,6 @@ function TeamChatScreen({
     const size = asset.size ?? assetFile?.size ?? 0;
     const mimeType = getSupportedFileType(asset.name, asset.mimeType);
 
-    if (!isAllowedChatFile(asset.name)) {
-      setErrorMessage('Solo se permiten imagenes, PDF, Word .doc y Word .docx.');
-      return;
-    }
-
     if (size > MAX_CHAT_FILE_SIZE) {
       setErrorMessage('El archivo debe pesar 25 MB o menos.');
       return;
@@ -4463,6 +4483,120 @@ function NativeDateTimeField({
   );
 }
 
+function AccountAccessPanel({ email, accountProfile }: { email: string; accountProfile: AppProfile | null }) {
+  const [phone, setPhone] = useState(accountProfile?.telefono ?? '');
+  const [alternateEmail, setAlternateEmail] = useState(accountProfile?.correo_alternativo ?? '');
+  const [nextEmail, setNextEmail] = useState('');
+  const [nextPassword, setNextPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [saving, setSaving] = useState<'contact' | 'email' | 'password' | null>(null);
+
+  useEffect(() => {
+    setPhone(accountProfile?.telefono ?? '');
+    setAlternateEmail(accountProfile?.correo_alternativo ?? '');
+  }, [accountProfile?.correo_alternativo, accountProfile?.telefono]);
+
+  const saveContact = async () => {
+    const normalizedEmail = alternateEmail.trim().toLowerCase();
+    if (normalizedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      Alert.alert('Correo alternativo', 'Escribe un correo válido.');
+      return;
+    }
+    setSaving('contact');
+    const { error } = await supabase.rpc('update_my_account_contact', {
+      telefono_value: phone.trim() || null,
+      correo_alternativo_value: normalizedEmail || null,
+    });
+    setSaving(null);
+    if (error) {
+      Alert.alert('No se pudo guardar', error.code === 'PGRST202' || error.code === 'PGRST205'
+        ? 'Esta función se activará al aplicar la actualización de base de datos 3.2.0.'
+        : error.message);
+      return;
+    }
+    Alert.alert('Contacto guardado', 'Tu teléfono y correo alternativo quedaron actualizados.');
+  };
+
+  const changeEmail = async () => {
+    const normalizedEmail = nextEmail.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      Alert.alert('Cambiar correo', 'Escribe el nuevo correo correctamente.');
+      return;
+    }
+    if (normalizedEmail === email.toLowerCase()) {
+      Alert.alert('Cambiar correo', 'Ese ya es el correo principal de la cuenta.');
+      return;
+    }
+    setSaving('email');
+    const { error } = await supabase.auth.updateUser(
+      { email: normalizedEmail },
+      { emailRedirectTo: PORTAL_CONFIRM_URL },
+    );
+    setSaving(null);
+    if (error) {
+      Alert.alert('No se pudo cambiar', error.message);
+      return;
+    }
+    setNextEmail('');
+    Alert.alert('Revisa tu correo', 'Enviamos la confirmación al correo actual y al nuevo. El cambio se aplicará después de confirmar ambos enlaces.');
+  };
+
+  const changePassword = async () => {
+    if (nextPassword.length < 8) {
+      Alert.alert('Cambiar contraseña', 'La nueva contraseña debe tener al menos 8 caracteres.');
+      return;
+    }
+    if (nextPassword !== confirmPassword) {
+      Alert.alert('Cambiar contraseña', 'Las contraseñas no coinciden.');
+      return;
+    }
+    setSaving('password');
+    const { error } = await supabase.auth.updateUser({ password: nextPassword });
+    setSaving(null);
+    if (error) {
+      Alert.alert('No se pudo cambiar', error.message);
+      return;
+    }
+    setNextPassword('');
+    setConfirmPassword('');
+    Alert.alert('Contraseña actualizada', 'La nueva contraseña ya está activa.');
+  };
+
+  return (
+    <View style={styles.formPreview}>
+      <View style={styles.recordTitleRow}>
+        <Text style={styles.cardTitle}>Cuenta y recuperación</Text>
+        <Ionicons name="shield-checkmark-outline" size={21} color="#1d4ed8" />
+      </View>
+      <Text style={styles.cardText}>Correo principal: {email}</Text>
+
+      <Text style={styles.inputLabel}>Teléfono</Text>
+      <TextInput value={phone} onChangeText={setPhone} keyboardType="phone-pad" placeholder="871 000 0000" placeholderTextColor="#94a3b8" style={styles.input} />
+      <Text style={styles.inputLabel}>Correo alternativo de seguridad</Text>
+      <TextInput value={alternateEmail} onChangeText={setAlternateEmail} autoCapitalize="none" autoCorrect={false} keyboardType="email-address" placeholder="respaldo@correo.com" placeholderTextColor="#94a3b8" style={styles.input} />
+      <Text style={styles.cardText}>El correo alternativo sirve como contacto de seguridad. Los enlaces oficiales para recuperar contraseña siguen llegando al correo principal verificado.</Text>
+      <Pressable style={styles.secondaryAction} onPress={() => void saveContact()} disabled={saving !== null}>
+        {saving === 'contact' ? <ActivityIndicator color="#1d4ed8" /> : <Text style={styles.secondaryActionText}>Guardar contacto</Text>}
+      </Pressable>
+
+      <View style={styles.settingsDivider} />
+      <Text style={styles.cardTitle}>Cambiar correo principal</Text>
+      <TextInput value={nextEmail} onChangeText={setNextEmail} autoCapitalize="none" autoCorrect={false} keyboardType="email-address" placeholder="nuevo@correo.com" placeholderTextColor="#94a3b8" style={styles.input} />
+      <Pressable style={styles.secondaryAction} onPress={() => void changeEmail()} disabled={saving !== null || !nextEmail.trim()}>
+        {saving === 'email' ? <ActivityIndicator color="#1d4ed8" /> : <Text style={styles.secondaryActionText}>Solicitar cambio de correo</Text>}
+      </Pressable>
+
+      <View style={styles.settingsDivider} />
+      <Text style={styles.cardTitle}>Cambiar contraseña</Text>
+      <TextInput value={nextPassword} onChangeText={setNextPassword} secureTextEntry autoCapitalize="none" placeholder="Nueva contraseña (mínimo 8)" placeholderTextColor="#94a3b8" style={styles.input} />
+      <TextInput value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry autoCapitalize="none" placeholder="Confirmar contraseña" placeholderTextColor="#94a3b8" style={styles.input} />
+      <Pressable style={styles.secondaryAction} onPress={() => void changePassword()} disabled={saving !== null || !nextPassword || !confirmPassword}>
+        {saving === 'password' ? <ActivityIndicator color="#1d4ed8" /> : <Text style={styles.secondaryActionText}>Actualizar contraseña</Text>}
+      </Pressable>
+    </View>
+  );
+}
+
 function ConfiguracionScreen({
   email,
   selectedMembership,
@@ -4482,6 +4616,7 @@ function ConfiguracionScreen({
   onBiometricChange,
   subscriptionStatus,
   trialEndsAt,
+  accountProfile,
 }: {
   email: string;
   selectedMembership: DespachoMember | null;
@@ -4501,6 +4636,7 @@ function ConfiguracionScreen({
   onBiometricChange: (enabled: boolean) => Promise<void>;
   subscriptionStatus?: AppProfile['subscription_status'];
   trialEndsAt?: string | null;
+  accountProfile: AppProfile | null;
 }) {
   const displayName = profileSettings.displayName.trim() || email.split('@')[0] || 'Colaborador';
   const updateField = (key: keyof ProfileSettings, value: string) => {
@@ -4610,6 +4746,8 @@ function ConfiguracionScreen({
         </Text>
       </View>
 
+      <AccountAccessPanel email={email} accountProfile={accountProfile} />
+
       <View style={styles.updateCard}>
         <View style={styles.updateCardHeader}>
           <View style={styles.updateCardIcon}>
@@ -4648,7 +4786,6 @@ function ConfiguracionScreen({
         </View>
       </View>
 
-      <CompactList items={['Cambiar contrasena', 'Anadir telefono', 'Cambiar correo', 'Enviar reporte']} />
       <Pressable style={styles.secondaryAction} onPress={() => Linking.openURL(PORTAL_URL)}>
         <Text style={styles.secondaryActionText}>Abrir portal web</Text>
       </Pressable>
@@ -4666,19 +4803,6 @@ function ScreenHeader({ title, subtitle }: { title: string; subtitle: string }) 
         <Text style={styles.screenTitle}>{title}</Text>
         <Text style={styles.screenSubtitle}>{subtitle}</Text>
       </View>
-    </View>
-  );
-}
-
-function CompactList({ items }: { items: string[] }) {
-  return (
-    <View style={styles.listBox}>
-      {items.map((item) => (
-        <View key={item} style={styles.listItem}>
-          <Ionicons name="checkmark-circle-outline" size={18} color="#15803d" />
-          <Text style={styles.listText}>{item}</Text>
-        </View>
-      ))}
     </View>
   );
 }
@@ -5594,6 +5718,11 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     padding: 14,
     backgroundColor: '#ffffff',
+  },
+  settingsDivider: {
+    height: 1,
+    marginVertical: 16,
+    backgroundColor: '#e2e8f0',
   },
   optionGrid: {
     flexDirection: 'row',

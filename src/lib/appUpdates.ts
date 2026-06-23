@@ -19,8 +19,8 @@ export interface MobileUpdateCheck {
 const RELEASE_MANIFEST_URL =
   'https://github.com/YzDemnz/judicial-managment-mobile/releases/latest/download/mobile-release.json';
 
-export const currentMobileVersion = Application.nativeApplicationVersion ?? '3.1.6';
-export const currentMobileBuild = Number.parseInt(Application.nativeBuildVersion ?? '3', 10) || 0;
+export const currentMobileVersion = Application.nativeApplicationVersion ?? '3.2.0';
+export const currentMobileBuild = Number.parseInt(Application.nativeBuildVersion ?? '4', 10) || 0;
 
 const parseVersion = (version: string) =>
   version
