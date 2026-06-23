@@ -782,6 +782,7 @@ export default function App() {
   const [mode, setMode] = useState<AuthMode>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -1430,6 +1431,29 @@ export default function App() {
     }
   };
 
+  const handlePasswordRecovery = async () => {
+    setError('');
+    setMessage('');
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail) {
+      setError('Escribe tu correo para solicitar la recuperación de contraseña.');
+      return;
+    }
+
+    setAuthLoading(true);
+    try {
+      const { error: recoveryError } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
+        redirectTo: PORTAL_CONFIRM_URL,
+      });
+      if (recoveryError) throw recoveryError;
+      setMessage('Te enviamos un enlace seguro para restablecer tu contraseña.');
+    } catch (recoveryError) {
+      setError(recoveryError instanceof Error ? recoveryError.message : 'No se pudo solicitar la recuperación.');
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
   const handleSignOut = async () => {
     await supabase.auth.signOut();
     setActiveSection('dashboard');
@@ -1448,77 +1472,89 @@ export default function App() {
 
   if (!session) {
     return (
-      <LinearGradient colors={['#020617', '#0f172a']} style={styles.screen}>
+      <LinearGradient colors={['#071526', '#0b2a62', '#dce9ff']} style={styles.authScreen}>
         <StatusBar style="light" />
+        <View pointerEvents="none" style={styles.authHaloTop} />
+        <View pointerEvents="none" style={styles.authHaloBottom} />
         <SafeAreaView style={styles.safeArea}>
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.keyboardArea}>
-            <ScrollView contentContainerStyle={styles.authContent} keyboardShouldPersistTaps="handled">
-              <View style={styles.authShell}>
-                <View style={styles.authHeader}>
-                  <Image source={logo} style={styles.authLogo} />
-                  <Text style={styles.authTitle}>Judicial Managment</Text>
-                  <Text style={styles.authSubtitle}>Gestion juridica profesional</Text>
+            <ScrollView contentContainerStyle={styles.authModernContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+              <View style={styles.authModernShell}>
+                <View style={styles.authModernBrand}>
+                  <View style={styles.authBrandMark}><Image source={logo} style={styles.authModernLogo} /></View>
+                  <View>
+                    <Text style={styles.authBrandName}>Judicial Managment</Text>
+                    <Text style={styles.authBrandCaption}>MR Legal</Text>
+                  </View>
                 </View>
 
-                <View style={styles.authCard}>
-                  <Text style={styles.authCardTitle}>{mode === 'login' ? 'Iniciar Sesion' : 'Crear Cuenta'}</Text>
+                <View style={styles.authModernIntro}>
+                  <View style={styles.authEyebrow}><Ionicons name="shield-checkmark-outline" size={14} color="#d4ab4e" /><Text style={styles.authEyebrowText}>ACCESO PROTEGIDO</Text></View>
+                  <Text style={styles.authModernTitle}>{mode === 'login' ? 'Bienvenido de nuevo' : 'Tu despacho empieza aquí'}</Text>
+                  <Text style={styles.authModernSubtitle}>{mode === 'login' ? 'Inicia sesión para continuar con tu trabajo jurídico.' : 'Crea una cuenta para organizar expedientes y colaborar.'}</Text>
+                </View>
 
-                  {Boolean(error) && <Text style={styles.errorBox}>{error}</Text>}
-                  {Boolean(message) && <Text style={styles.successBox}>{message}</Text>}
+                <View style={styles.authModernCard}>
+                  {Boolean(error) && <View style={styles.authErrorNotice}><Ionicons name="alert-circle-outline" size={18} color="#b91c1c" /><Text style={styles.authErrorText}>{error}</Text></View>}
+                  {Boolean(message) && <View style={styles.authSuccessNotice}><Ionicons name="mail-outline" size={18} color="#1d4ed8" /><Text style={styles.authSuccessText}>{message}</Text></View>}
 
-                  <Text style={styles.inputLabel}>Correo Electronico</Text>
-                  <TextInput
-                    autoCapitalize="none"
-                    autoComplete="email"
-                    keyboardType="email-address"
-                    onChangeText={setEmail}
-                    placeholder="correo@despacho.com"
-                    placeholderTextColor="#94a3b8"
-                    style={styles.input}
-                    value={email}
-                  />
+                  <Text style={styles.authFormTitle}>{mode === 'login' ? 'Iniciar sesión' : 'Crear cuenta'}</Text>
+                  <Text style={styles.authFormHint}>{mode === 'login' ? 'Usa tus credenciales de Judicial Managment.' : 'Tu correo será la llave de acceso a tu despacho.'}</Text>
 
-                  <Text style={styles.inputLabel}>Contrasena</Text>
-                  <TextInput
-                    autoCapitalize="none"
-                    onChangeText={setPassword}
-                    placeholder="Minimo 6 caracteres"
-                    placeholderTextColor="#94a3b8"
-                    secureTextEntry
-                    style={styles.input}
-                    value={password}
-                  />
+                  <Text style={styles.authModernLabel}>Correo electrónico</Text>
+                  <View style={styles.authInputShell}>
+                    <Ionicons name="mail-outline" size={20} color="#2563eb" />
+                    <TextInput
+                      autoCapitalize="none"
+                      autoComplete="email"
+                      keyboardType="email-address"
+                      onChangeText={setEmail}
+                      placeholder="tu@correo.com"
+                      placeholderTextColor="#94a3b8"
+                      style={styles.authModernInput}
+                      value={email}
+                    />
+                  </View>
 
-                  <Pressable style={styles.primaryButton} onPress={handleAuth} disabled={authLoading}>
-                    {authLoading ? (
-                      <ActivityIndicator color="#ffffff" />
-                    ) : (
-                      <Text style={styles.primaryButtonText}>
-                        {mode === 'login' ? 'Iniciar Sesion' : 'Crear una cuenta'}
-                      </Text>
-                    )}
+                  <Text style={styles.authModernLabel}>Contraseña</Text>
+                  <View style={styles.authInputShell}>
+                    <Ionicons name="lock-closed-outline" size={19} color="#2563eb" />
+                    <TextInput
+                      autoCapitalize="none"
+                      autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                      onChangeText={setPassword}
+                      placeholder="Mínimo 6 caracteres"
+                      placeholderTextColor="#94a3b8"
+                      secureTextEntry={!showPassword}
+                      style={styles.authModernInput}
+                      value={password}
+                    />
+                    <Pressable onPress={() => setShowPassword((current) => !current)} hitSlop={10}>
+                      <Ionicons name={showPassword ? 'eye-off-outline' : 'eye-outline'} size={20} color="#64748b" />
+                    </Pressable>
+                  </View>
+
+                  {mode === 'login' && <Pressable onPress={handlePasswordRecovery} disabled={authLoading} style={styles.authRecoveryLink}><Text style={styles.authRecoveryText}>¿Olvidaste tu contraseña?</Text></Pressable>}
+
+                  <Pressable style={({ pressed }) => [styles.authModernPrimary, pressed && styles.authModernPrimaryPressed, authLoading && styles.authModernDisabled]} onPress={handleAuth} disabled={authLoading}>
+                    {authLoading ? <ActivityIndicator color="#ffffff" /> : <><Text style={styles.authModernPrimaryText}>{mode === 'login' ? 'Iniciar sesión' : 'Crear cuenta'}</Text><Ionicons name="arrow-forward" size={19} color="#ffffff" /></>}
                   </Pressable>
 
-                  <View style={styles.authDivider} />
+                  <View style={styles.authModernDivider}><View style={styles.authModernDividerLine} /><Text style={styles.authModernDividerText}>o continúa desde el portal</Text><View style={styles.authModernDividerLine} /></View>
 
-                  <Pressable
-                    style={styles.secondaryButton}
-                    onPress={() => {
-                      setError('');
-                      setMessage('');
-                      setMode(mode === 'login' ? 'signup' : 'login');
-                    }}
-                  >
-                    <Text style={styles.secondaryButtonText}>
-                      {mode === 'login' ? 'Crear una cuenta' : 'Ya tengo cuenta'}
-                    </Text>
-                  </Pressable>
-
-                  <Pressable style={styles.portalLink} onPress={() => Linking.openURL(PORTAL_URL)}>
-                    <Text style={styles.portalLinkText}>Abrir portal web</Text>
+                  <Pressable style={({ pressed }) => [styles.authPortalButton, pressed && styles.authPortalButtonPressed]} onPress={() => Linking.openURL(PORTAL_URL)}>
+                    <Ionicons name="globe-outline" size={18} color="#1d4ed8" />
+                    <Text style={styles.authPortalButtonText}>Abrir portal web</Text>
                     <Ionicons name="open-outline" size={16} color="#1d4ed8" />
                   </Pressable>
+
+                  <View style={styles.authSwitchRow}>
+                    <Text style={styles.authSwitchText}>{mode === 'login' ? '¿Aún no tienes cuenta?' : '¿Ya tienes una cuenta?'}</Text>
+                    <Pressable onPress={() => { setError(''); setMessage(''); setPassword(''); setMode((current) => current === 'login' ? 'signup' : 'login'); }}><Text style={styles.authSwitchLink}>{mode === 'login' ? 'Regístrate' : 'Inicia sesión'}</Text></Pressable>
+                  </View>
                 </View>
+
+                <View style={styles.authTrustRow}><Ionicons name="lock-closed-outline" size={15} color="#d4ab4e" /><Text style={styles.authTrustText}>Tu información se administra en tu cuenta y despacho.</Text></View>
               </View>
             </ScrollView>
           </KeyboardAvoidingView>
@@ -4695,6 +4731,295 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     justifyContent: 'center',
     paddingVertical: 22,
+  },
+  authScreen: {
+    flex: 1,
+    overflow: 'hidden',
+  },
+  authHaloTop: {
+    position: 'absolute',
+    top: -110,
+    right: -95,
+    width: 260,
+    height: 260,
+    borderWidth: 32,
+    borderColor: 'rgba(255,255,255,0.13)',
+    borderRadius: 130,
+  },
+  authHaloBottom: {
+    position: 'absolute',
+    bottom: -150,
+    left: -100,
+    width: 310,
+    height: 310,
+    borderWidth: 38,
+    borderColor: 'rgba(255,255,255,0.16)',
+    borderRadius: 155,
+  },
+  authModernContent: {
+    flexGrow: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 28,
+  },
+  authModernShell: {
+    width: '100%',
+    maxWidth: 500,
+    alignSelf: 'center',
+  },
+  authModernBrand: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 40,
+  },
+  authBrandMark: {
+    width: 45,
+    height: 45,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.35)',
+    borderRadius: 8,
+    backgroundColor: 'rgba(7,21,38,0.55)',
+  },
+  authModernLogo: {
+    width: 34,
+    height: 34,
+  },
+  authBrandName: {
+    color: '#ffffff',
+    fontSize: 18,
+    fontWeight: '900',
+  },
+  authBrandCaption: {
+    marginTop: 1,
+    color: '#f4d98a',
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 0.8,
+  },
+  authModernIntro: {
+    marginBottom: 25,
+  },
+  authEyebrow: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(212,171,78,0.52)',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    backgroundColor: 'rgba(7,21,38,0.28)',
+  },
+  authEyebrowText: {
+    color: '#f8e7ad',
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+  },
+  authModernTitle: {
+    marginTop: 14,
+    color: '#ffffff',
+    fontSize: 32,
+    fontWeight: '900',
+    lineHeight: 38,
+  },
+  authModernSubtitle: {
+    maxWidth: 390,
+    marginTop: 8,
+    color: '#dbeafe',
+    fontSize: 14,
+    lineHeight: 21,
+  },
+  authModernCard: {
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.74)',
+    borderRadius: 8,
+    padding: 21,
+    backgroundColor: 'rgba(255,255,255,0.97)',
+    shadowColor: '#071526',
+    shadowOpacity: 0.22,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 8,
+  },
+  authErrorNotice: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    borderWidth: 1,
+    borderColor: '#fecaca',
+    borderRadius: 6,
+    marginBottom: 14,
+    padding: 10,
+    backgroundColor: '#fff1f2',
+  },
+  authErrorText: {
+    flex: 1,
+    color: '#991b1b',
+    fontSize: 12,
+    fontWeight: '700',
+    lineHeight: 18,
+  },
+  authSuccessNotice: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    borderRadius: 6,
+    marginBottom: 14,
+    padding: 10,
+    backgroundColor: '#eff6ff',
+  },
+  authSuccessText: {
+    flex: 1,
+    color: '#1e3a8a',
+    fontSize: 12,
+    fontWeight: '700',
+    lineHeight: 18,
+  },
+  authFormTitle: {
+    color: '#0f172a',
+    fontSize: 24,
+    fontWeight: '900',
+  },
+  authFormHint: {
+    marginTop: 5,
+    marginBottom: 20,
+    color: '#64748b',
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  authModernLabel: {
+    color: '#334155',
+    fontSize: 13,
+    fontWeight: '900',
+    marginBottom: 8,
+  },
+  authInputShell: {
+    minHeight: 54,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    borderRadius: 8,
+    marginBottom: 16,
+    paddingHorizontal: 13,
+    backgroundColor: '#ffffff',
+  },
+  authModernInput: {
+    flex: 1,
+    minWidth: 0,
+    color: '#0f172a',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  authRecoveryLink: {
+    alignSelf: 'flex-start',
+    marginTop: -4,
+    marginBottom: 16,
+  },
+  authRecoveryText: {
+    color: '#1d4ed8',
+    fontSize: 12,
+    fontWeight: '900',
+  },
+  authModernPrimary: {
+    minHeight: 53,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 9,
+    borderRadius: 8,
+    backgroundColor: '#1d4ed8',
+    shadowColor: '#1d4ed8',
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 4,
+  },
+  authModernPrimaryPressed: {
+    opacity: 0.86,
+    transform: [{ scale: 0.985 }],
+  },
+  authModernDisabled: {
+    opacity: 0.55,
+  },
+  authModernPrimaryText: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  authModernDivider: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+    marginVertical: 19,
+  },
+  authModernDividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#e2e8f0',
+  },
+  authModernDividerText: {
+    color: '#94a3b8',
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  authPortalButton: {
+    minHeight: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    borderRadius: 8,
+    backgroundColor: '#f8fbff',
+  },
+  authPortalButtonPressed: {
+    backgroundColor: '#eff6ff',
+  },
+  authPortalButtonText: {
+    color: '#1d4ed8',
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  authSwitchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexWrap: 'wrap',
+    gap: 5,
+    marginTop: 22,
+  },
+  authSwitchText: {
+    color: '#64748b',
+    fontSize: 13,
+  },
+  authSwitchLink: {
+    color: '#1d4ed8',
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  authTrustRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    marginTop: 19,
+    paddingHorizontal: 12,
+  },
+  authTrustText: {
+    color: '#e6efff',
+    fontSize: 11,
+    fontWeight: '700',
+    textAlign: 'center',
   },
   loadingScreen: {
     flex: 1,
