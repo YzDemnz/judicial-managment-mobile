@@ -111,14 +111,6 @@ jobs:
           NODE
           cat mobile-release.json
 
-      - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Judicial-Managment-Mobile-Android
-          path: |
-            Judicial-Managment-Mobile-Android.apk
-            mobile-release.json
-
       - name: Publish latest APK release
         env:
           GH_TOKEN: ${{ github.token }}
