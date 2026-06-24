@@ -1477,21 +1477,14 @@ export default function App() {
   const handlePasswordRecovery = async () => {
     setError('');
     setMessage('');
-    const cleanEmail = email.trim().toLowerCase();
-    if (!cleanEmail) {
-      setError('Escribe tu correo para solicitar la recuperación de contraseña.');
-      return;
-    }
-
     setAuthLoading(true);
     try {
-      const { error: recoveryError } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
-        redirectTo: PORTAL_CONFIRM_URL,
-      });
-      if (recoveryError) throw recoveryError;
-      setMessage('Te enviamos un enlace seguro para restablecer tu contraseña.');
+      const supported = await Linking.canOpenURL(PORTAL_PASSWORD_RECOVERY_URL);
+      if (!supported) throw new Error('El dispositivo no puede abrir el portal seguro.');
+      await Linking.openURL(PORTAL_PASSWORD_RECOVERY_URL);
+      setMessage('Abrimos el portal seguro para confirmar tu correo y restablecer tu contraseña.');
     } catch (recoveryError) {
-      setError(recoveryError instanceof Error ? recoveryError.message : 'No se pudo solicitar la recuperación.');
+      setError(recoveryError instanceof Error ? recoveryError.message : 'No se pudo abrir la recuperación segura.');
     } finally {
       setAuthLoading(false);
     }

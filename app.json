@@ -2,7 +2,7 @@
   "expo": {
     "name": "Judicial Managment",
     "slug": "judicial-managment-mobile",
-    "version": "3.2.1",
+    "version": "3.2.2",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "judicialmanagmentmobile",
@@ -57,11 +57,11 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.mrlegal.judicialmanagment.mobile",
-      "buildNumber": "5"
+      "buildNumber": "6"
     },
     "android": {
       "package": "com.mrlegal.judicialmanagment.mobile",
-      "versionCode": 5,
+      "versionCode": 6,
       "adaptiveIcon": {
         "backgroundColor": "#0c1424",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -75,9 +75,9 @@
     },
     "extra": {
       "releaseNotes": [
-        "La contrasena se restablece mediante un enlace seguro del portal.",
-        "El correo de respaldo requiere 2FA y una confirmacion independiente.",
-        "Mejoras de estabilidad para perfiles y datos de contacto."
+        "Se corrige el enlace de recuperacion de contrasena.",
+        "El portal valida la sesion creada por el enlace antes de permitir cambios.",
+        "Mejoras de estabilidad para datos de cuenta."
       ]
     }
   }
