@@ -30,7 +30,14 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { PORTAL_CONFIRM_URL, PORTAL_URL } from './src/config';
+import {
+  BACKUP_RECOVERY_ENABLED,
+  PORTAL_ACCOUNT_URL,
+  PORTAL_BACKUP_RECOVERY_URL,
+  PORTAL_CONFIRM_URL,
+  PORTAL_PASSWORD_RECOVERY_URL,
+  PORTAL_URL,
+} from './src/config';
 import {
   checkForMobileUpdate,
   currentMobileBuild,
@@ -194,6 +201,8 @@ interface AppProfile {
   trial_ends_at?: string | null;
   telefono?: string | null;
   correo_alternativo?: string | null;
+  correo_alternativo_verificado_en?: string | null;
+  recovery_email_enabled?: boolean;
 }
 
 interface ChatAttachment {
@@ -923,13 +932,23 @@ export default function App() {
 
     void (async () => {
       try {
-        const { data } = await supabase
+        const { data, error } = await supabase
           .from('app_profiles')
           .select('id,email,account_status,subscription_status,ban_until,ban_reason,disabled_reason,trial_ends_at,telefono,correo_alternativo')
           .eq('id', session.user.id)
           .maybeSingle();
         if (!mounted) return;
-        setAppProfile((data as AppProfile | null) ?? null);
+        if (error && /telefono|correo_alternativo|schema cache|column/i.test(error.message)) {
+          const { data: fallbackProfile } = await supabase
+            .from('app_profiles')
+            .select('id,email,account_status,subscription_status,ban_until,ban_reason,disabled_reason,trial_ends_at')
+            .eq('id', session.user.id)
+            .maybeSingle();
+          if (!mounted) return;
+          setAppProfile((fallbackProfile as AppProfile | null) ?? null);
+        } else {
+          setAppProfile((data as AppProfile | null) ?? null);
+        }
       } finally {
         if (mounted) setLoadingProfile(false);
       }
@@ -4551,15 +4570,9 @@ function AccountAccessPanel({ email, accountProfile }: { email: string; accountP
       return;
     }
     setSaving('password');
-    const { error } = await supabase.auth.updateUser({ password: nextPassword });
+    await Linking.openURL(PORTAL_PASSWORD_RECOVERY_URL);
     setSaving(null);
-    if (error) {
-      Alert.alert('No se pudo cambiar', error.message);
-      return;
-    }
-    setNextPassword('');
-    setConfirmPassword('');
-    Alert.alert('Contraseña actualizada', 'La nueva contraseña ya está activa.');
+    Alert.alert('Continua en el portal', 'Enviaremos un enlace de un solo uso antes de permitir cambiar la contraseña.');
   };
 
   return (
@@ -4592,6 +4605,74 @@ function AccountAccessPanel({ email, accountProfile }: { email: string; accountP
       <TextInput value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry autoCapitalize="none" placeholder="Confirmar contraseña" placeholderTextColor="#94a3b8" style={styles.input} />
       <Pressable style={styles.secondaryAction} onPress={() => void changePassword()} disabled={saving !== null || !nextPassword || !confirmPassword}>
         {saving === 'password' ? <ActivityIndicator color="#1d4ed8" /> : <Text style={styles.secondaryActionText}>Actualizar contraseña</Text>}
+      </Pressable>
+    </View>
+  );
+}
+
+function SecureAccountAccessPanel({ email, accountProfile }: { email: string; accountProfile: AppProfile | null }) {
+  const [phone, setPhone] = useState(accountProfile?.telefono ?? '');
+  const [mfaEnabled, setMfaEnabled] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setPhone(accountProfile?.telefono ?? '');
+    void supabase.auth.mfa.listFactors().then(({ data }) => {
+      setMfaEnabled(Boolean((data?.totp ?? []).some((factor) => factor.status === 'verified')));
+    }).catch(() => setMfaEnabled(false));
+  }, [accountProfile?.telefono]);
+
+  const savePhone = async () => {
+    setSaving(true);
+    const { error } = await supabase.rpc('update_my_account_phone', {
+      telefono_value: phone.trim() || null,
+    });
+    setSaving(false);
+    if (error) {
+      Alert.alert(
+        'Contacto pendiente',
+        error.code === 'PGRST202' || error.code === 'PGRST205'
+          ? 'Este dato se habilitará al aplicar la actualización de seguridad 3.2.1.'
+          : error.message,
+      );
+      return;
+    }
+    Alert.alert('Teléfono actualizado', 'Tu teléfono de contacto quedó guardado.');
+  };
+
+  return (
+    <View style={styles.formPreview}>
+      <View style={styles.recordTitleRow}>
+        <Text style={styles.cardTitle}>Cuenta y recuperación</Text>
+        <Ionicons name="shield-checkmark-outline" size={21} color="#1d4ed8" />
+      </View>
+      <Text style={styles.cardText}>Correo principal: {email}</Text>
+
+      <Text style={styles.inputLabel}>Teléfono de contacto</Text>
+      <TextInput value={phone} onChangeText={setPhone} keyboardType="phone-pad" placeholder="871 000 0000" placeholderTextColor="#94a3b8" style={styles.input} />
+      <Pressable style={styles.secondaryAction} onPress={() => void savePhone()} disabled={saving}>
+        {saving ? <ActivityIndicator color="#1d4ed8" /> : <Text style={styles.secondaryActionText}>Guardar teléfono</Text>}
+      </Pressable>
+
+      <View style={styles.settingsDivider} />
+      <Text style={styles.cardTitle}>Restablecer contraseña</Text>
+      <Text style={styles.cardText}>El portal enviará un enlace de un solo uso a tu correo. La nueva contraseña solo se captura después de confirmar ese enlace.</Text>
+      <Pressable style={styles.secondaryAction} onPress={() => Linking.openURL(PORTAL_PASSWORD_RECOVERY_URL)}>
+        <Text style={styles.secondaryActionText}>Continuar en el portal</Text>
+      </Pressable>
+
+      <View style={styles.settingsDivider} />
+      <Text style={styles.cardTitle}>Correo de respaldo</Text>
+      <Text style={styles.cardText}>{mfaEnabled ? 'Configura y confirma un Hotmail de respaldo para recuperar acceso si olvidas tu correo o contraseña.' : 'Esta opción se habilita solo después de activar la verificación en 2 pasos.'}</Text>
+      <Pressable style={[styles.secondaryAction, (!mfaEnabled || !BACKUP_RECOVERY_ENABLED) && styles.disabledAction]} onPress={() => Linking.openURL(PORTAL_BACKUP_RECOVERY_URL)} disabled={!mfaEnabled || !BACKUP_RECOVERY_ENABLED}>
+        <Text style={styles.secondaryActionText}>{!mfaEnabled ? 'Activa 2FA primero' : BACKUP_RECOVERY_ENABLED ? 'Configurar correo de respaldo' : 'Respaldo en activacion'}</Text>
+      </Pressable>
+
+      <View style={styles.settingsDivider} />
+      <Text style={styles.cardTitle}>Correo principal</Text>
+      <Text style={styles.cardText}>Los cambios de correo se confirman desde el portal seguro.</Text>
+      <Pressable style={styles.secondaryAction} onPress={() => Linking.openURL(PORTAL_ACCOUNT_URL)}>
+        <Text style={styles.secondaryActionText}>Administrar correo</Text>
       </Pressable>
     </View>
   );
@@ -4746,7 +4827,7 @@ function ConfiguracionScreen({
         </Text>
       </View>
 
-      <AccountAccessPanel email={email} accountProfile={accountProfile} />
+      <SecureAccountAccessPanel email={email} accountProfile={accountProfile} />
 
       <View style={styles.updateCard}>
         <View style={styles.updateCardHeader}>
@@ -6259,6 +6340,10 @@ const styles = StyleSheet.create({
     color: '#1d4ed8',
     fontSize: 15,
     fontWeight: '900',
+  },
+  disabledAction: {
+    opacity: 0.52,
+    backgroundColor: '#f1f5f9',
   },
   dangerAction: {
     minHeight: 50,

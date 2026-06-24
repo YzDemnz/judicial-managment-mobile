@@ -2,7 +2,7 @@
   "expo": {
     "name": "Judicial Managment",
     "slug": "judicial-managment-mobile",
-    "version": "3.2.0",
+    "version": "3.2.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "judicialmanagmentmobile",
@@ -57,11 +57,11 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.mrlegal.judicialmanagment.mobile",
-      "buildNumber": "4"
+      "buildNumber": "5"
     },
     "android": {
       "package": "com.mrlegal.judicialmanagment.mobile",
-      "versionCode": 4,
+      "versionCode": 5,
       "adaptiveIcon": {
         "backgroundColor": "#0c1424",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -75,9 +75,9 @@
     },
     "extra": {
       "releaseNotes": [
-        "Se corrigen despachos duplicados al unirse o cambiar de dispositivo.",
-        "Cuenta: telefono, correo alternativo, cambio de correo y contrasena.",
-        "Adjuntos de expedientes y movimientos compatibles con cualquier formato."
+        "La contrasena se restablece mediante un enlace seguro del portal.",
+        "El correo de respaldo requiere 2FA y una confirmacion independiente.",
+        "Mejoras de estabilidad para perfiles y datos de contacto."
       ]
     }
   }
