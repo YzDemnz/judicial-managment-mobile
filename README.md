@@ -1,39 +1,38 @@
 # Judicial Managment Mobile
 
-Aplicacion movil de Judicial Managment, creada con Expo, React Native y TypeScript.
+Cliente móvil del ecosistema Judicial Managment para consulta y colaboración jurídica. Desarrollado con Expo, React Native y TypeScript.
 
-## Ubicacion
+## Funcionalidad
 
-El proyecto vive en:
+- Inicio de sesión, registro y confirmación de correo mediante backend de autenticación.
+- Sesión persistente en el dispositivo con AsyncStorage.
+- Pantallas de expedientes, movimientos, clientes, calendario, laboral, archivo, configuración y equipo.
+- Chat por despacho con mensajes en tiempo real, adjuntos y enlaces privados temporales.
+- Calendario local y recordatorios de audiencia mediante notificaciones del dispositivo.
+- Personalización local del perfil.
 
-`E:\Judicial Managment Suite\judicial-managment-mobile`
+## Estructura
 
-## Comandos
+`App.tsx` contiene la aplicación. `src/config.ts` centraliza configuración; `src/lib/` agrupa conexión al backend y comprobación de actualizaciones. `assets/` contiene recursos visuales y `scripts/` las tareas auxiliares.
+
+## Desarrollo
+
+Requiere Node.js, las dependencias fijadas en el lockfile y un dispositivo o entorno compatible con la versión de Expo declarada en `package.json`.
 
 ```powershell
-npm run start
-npm run start:tunnel
-npm run android
-npm run ios
-npm run web
+npm ci
 npm run typecheck
+npm start
 ```
 
-## Estado
+Otros comandos: `npm run android`, `npm run ios`, `npm run web` y `npm run start:tunnel`. La configuración de autenticación, tablas, almacenamiento y políticas debe corresponder al backend del entorno de desarrollo. Las credenciales de administración no deben incluirse en el cliente.
 
-- Login y registro conectados a Supabase Auth.
-- Confirmacion de correo redirigida al portal web publicado.
-- Sesion persistente en celular mediante AsyncStorage.
-- Panel, Expedientes, Movimientos, Calendario, Clientes, Laboral, Archivo, Chat de equipo y Configuracion.
-- Personalizacion local del perfil visible.
-- Chat de equipo conectado a Supabase por despacho, con mensajes, realtime, adjuntos y enlaces privados firmados.
-- Calendario local con recordatorios de audiencia usando notificaciones del dispositivo.
-- La app movil se concentra en expedientes, audiencias, clientes, documentos y colaboracion; las herramientas de escritorio permanecen en la version de Windows.
-- Branding con el logo actual.
+## Estado y límites
 
-## Siguiente fase
+Aplicación en desarrollo. La existencia de una pantalla no implica que todos sus datos estén sincronizados: queda pendiente completar conexiones a tablas por despacho y sincronizar el calendario local. Los builds distribuibles mediante EAS son una fase independiente. Las herramientas exclusivas de escritorio permanecen en la aplicación Windows.
 
-- Conectar cada pantalla a tablas reales por despacho.
-- Sincronizar calendario local con Supabase.
-- Sincronizacion opcional con calendario externo del telefono.
-- Builds instalables con EAS para Android e iOS.
+## Proyecto
+
+[GitHub del desarrollador](https://github.com/YzDemnz) · [CV y portafolio](https://yzdemnz.github.io/cv-portafolio/)
+
+Se conserva la licencia incluida en el repositorio.
